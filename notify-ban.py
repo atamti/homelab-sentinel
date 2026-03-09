@@ -26,6 +26,7 @@ sys.path.insert(0, os.environ.get(
 
 from sentinel import telegram
 from sentinel.config import env, SILENT_RULES
+from sentinel.validate import validated_ip
 
 # ── Load config from environment ────────────────────────────────────────────
 BOT_TOKEN        = env("TELEGRAM_BOT_TOKEN")
@@ -78,6 +79,55 @@ def is_duplicate(ip: str, ttl: int = 10) -> bool:
     except FileExistsError:
         return True
     return False
+
+
+def is_already_banned(ip: str) -> bool:
+    """Return True if a DROP rule for this IP already exists in iptables INPUT chain."""
+    try:
+        result = subprocess.run(
+            ["iptables", "-C", "INPUT", "-s", ip, "-j", "DROP"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return result.returncode == 0
+    except Exception as e:
+        debug_log(f"iptables -C check failed for {ip}: {e}")
+        return False  # fail open — proceed with handshake
+
+
+def deduplicate_iptables() -> int:
+    """Remove duplicate DROP rules from iptables INPUT chain.
+
+    Returns count of duplicates removed.
+    Reads current rules via iptables-save, deduplicates, restores.
+    Intended for manual / cron use, not called in the main flow.
+    """
+    try:
+        raw = subprocess.run(
+            ["iptables-save"], capture_output=True, text=True, check=True,
+        ).stdout
+        seen: set[str] = set()
+        deduped_lines: list[str] = []
+        removed = 0
+        for line in raw.splitlines():
+            if line.startswith("-A INPUT") and "-j DROP" in line:
+                if line in seen:
+                    removed += 1
+                    continue
+                seen.add(line)
+            deduped_lines.append(line)
+        if removed:
+            subprocess.run(
+                ["iptables-restore"],
+                input="\n".join(deduped_lines) + "\n",
+                text=True,
+                check=True,
+            )
+            debug_log(f"deduplicate_iptables: removed {removed} duplicate(s)")
+        return removed
+    except Exception as e:
+        debug_log(f"deduplicate_iptables error: {e}")
+        return 0
 
 
 def run_firewall_drop(alert_json: str) -> None:
@@ -145,8 +195,18 @@ def main() -> None:
         debug_log("No srcip found, exiting")
         sys.exit(0)
 
-    # ── Firewall drop (both add and delete go through the binary) ────
-    run_firewall_drop(raw)
+    # Validate IP before any iptables interaction (fail open on bad input)
+    try:
+        ip = validated_ip(ip)
+    except ValueError:
+        debug_log(f"Invalid IP from alert: {ip}")
+        sys.exit(1)
+
+    # ── Firewall drop (skip if IP already has a DROP rule) ───────────
+    if not is_already_banned(ip):
+        run_firewall_drop(raw)
+    else:
+        debug_log(f"{ip} already in iptables, skipping firewall-drop")
 
     # ── Handle add (new ban) ─────────────────────────────────────────
     if action == "add":

@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 import time
 from unittest.mock import patch, MagicMock
 
@@ -79,6 +80,7 @@ class TestMainAdd:
             patch("sys.stdin") as mock_stdin,
             patch.object(notify_ban, "run_firewall_drop"),
             patch.object(notify_ban, "is_duplicate", return_value=False),
+            patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
             mock_stdin.read.return_value = payload
             notify_ban.main()
@@ -94,6 +96,7 @@ class TestMainAdd:
             patch("sys.stdin") as mock_stdin,
             patch.object(notify_ban, "run_firewall_drop"),
             patch.object(notify_ban, "is_duplicate", return_value=False),
+            patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
             mock_stdin.read.return_value = payload
             notify_ban.main()
@@ -107,6 +110,7 @@ class TestMainAdd:
             patch("sys.stdin") as mock_stdin,
             patch.object(notify_ban, "run_firewall_drop"),
             patch.object(notify_ban, "is_duplicate", return_value=False),
+            patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
             mock_stdin.read.return_value = payload
             notify_ban.main()
@@ -120,6 +124,7 @@ class TestMainAdd:
             patch("sys.stdin") as mock_stdin,
             patch.object(notify_ban, "run_firewall_drop"),
             patch.object(notify_ban, "is_duplicate", return_value=True),
+            patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
             mock_stdin.read.return_value = payload
             with pytest.raises(SystemExit):
@@ -135,6 +140,7 @@ class TestMainDelete:
         with (
             patch("sys.stdin") as mock_stdin,
             patch.object(notify_ban, "run_firewall_drop"),
+            patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
             mock_stdin.read.return_value = payload
             notify_ban.main()
@@ -157,6 +163,100 @@ class TestMainEdgeCases:
             mock_stdin.read.return_value = payload
             with pytest.raises(SystemExit):
                 notify_ban.main()
+
+
+# ── iptables dedup ───────────────────────────────────────────────────────────────
+
+class TestIsAlreadyBanned:
+    def test_returns_true_when_rule_exists(self, notify_ban):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            assert notify_ban.is_already_banned("1.2.3.4") is True
+            mock_run.assert_called_once_with(
+                ["iptables", "-C", "INPUT", "-s", "1.2.3.4", "-j", "DROP"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+    def test_returns_false_when_rule_missing(self, notify_ban):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            assert notify_ban.is_already_banned("1.2.3.4") is False
+
+    def test_fails_open_on_exception(self, notify_ban):
+        with patch("subprocess.run", side_effect=OSError("no iptables")):
+            assert notify_ban.is_already_banned("1.2.3.4") is False
+
+
+class TestAlreadyBannedSkipsFirewallDrop:
+    def test_skips_handshake_when_already_banned(self, notify_ban):
+        payload = make_ar_input(action="add", srcip="3.3.3.3", rule_id="5710")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "run_firewall_drop") as mock_fw,
+            patch.object(notify_ban, "is_duplicate", return_value=False),
+            patch.object(notify_ban, "is_already_banned", return_value=True),
+        ):
+            mock_stdin.read.return_value = payload
+            notify_ban.main()
+
+        # Firewall drop should NOT have been called
+        mock_fw.assert_not_called()
+        # But Telegram notification should still be sent
+        assert notify_ban._mock_post.call_count >= 1
+
+    def test_calls_handshake_when_not_banned(self, notify_ban):
+        payload = make_ar_input(action="add", srcip="4.4.4.4", rule_id="5710")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "run_firewall_drop") as mock_fw,
+            patch.object(notify_ban, "is_duplicate", return_value=False),
+            patch.object(notify_ban, "is_already_banned", return_value=False),
+        ):
+            mock_stdin.read.return_value = payload
+            notify_ban.main()
+
+        mock_fw.assert_called_once()
+
+
+class TestDeduplicateIptables:
+    def test_removes_duplicates(self, notify_ban):
+        iptables_output = (
+            "*filter\n"
+            ":INPUT ACCEPT [0:0]\n"
+            "-A INPUT -s 1.2.3.4/32 -j DROP\n"
+            "-A INPUT -s 1.2.3.4/32 -j DROP\n"
+            "-A INPUT -s 5.6.7.8/32 -j DROP\n"
+            "COMMIT\n"
+        )
+        mock_save = MagicMock(stdout=iptables_output)
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [mock_save, MagicMock()]  # save, restore
+            removed = notify_ban.deduplicate_iptables()
+        assert removed == 1
+        # iptables-restore should have been called with deduped content
+        restore_call = mock_run.call_args_list[1]
+        assert "-A INPUT -s 1.2.3.4/32 -j DROP" in restore_call[1]["input"]
+        # Only one copy of the 1.2.3.4 rule in the restore input
+        assert restore_call[1]["input"].count("-A INPUT -s 1.2.3.4/32 -j DROP") == 1
+
+    def test_noop_when_no_duplicates(self, notify_ban):
+        iptables_output = (
+            "*filter\n"
+            "-A INPUT -s 1.2.3.4/32 -j DROP\n"
+            "COMMIT\n"
+        )
+        mock_save = MagicMock(stdout=iptables_output)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock_save
+            removed = notify_ban.deduplicate_iptables()
+        assert removed == 0
+        # Only iptables-save called, no restore needed
+        assert mock_run.call_count == 1
+
+    def test_returns_zero_on_error(self, notify_ban):
+        with patch("subprocess.run", side_effect=OSError("fail")):
+            assert notify_ban.deduplicate_iptables() == 0
 
     def test_bad_json_exits(self, notify_ban):
         with patch("sys.stdin") as mock_stdin:
