@@ -1,0 +1,851 @@
+#!/usr/bin/env python3
+"""
+telegram-commander.py - Homelab Sentinel Telegram Command Bot
+=============================================================
+Provides read-only status commands and TOTP-protected active response
+commands via Telegram. Queries Wazuh Manager API, OpenSearch indexer,
+LND REST API, local mempool, and Uptime Kuma.
+
+Also sends a daily digest at DIGEST_TIME.
+
+Configuration:
+  Copy .env.example to .env and fill in values.
+  The systemd unit injects these as environment variables.
+
+Deployment:
+  sudo cp telegram-commander.py /var/ossec/integrations/telegram-commander.py
+  sudo chmod 750 /var/ossec/integrations/telegram-commander.py
+  sudo systemctl restart homelab-sentinel
+"""
+
+import base64
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+import traceback
+
+sys.path.insert(0, os.environ.get(
+    "SENTINEL_LIB", os.path.dirname(os.path.abspath(__file__))))
+
+import pyotp
+import requests
+
+from sentinel import telegram, wazuh
+from sentinel.config import require_env, env
+from sentinel.telegram import esc
+from sentinel.validate import validated_ip, validated_port
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Configuration — loaded from environment variables
+# ══════════════════════════════════════════════════════════════════════════════
+
+BOT_TOKEN       = require_env("TELEGRAM_BOT_TOKEN")
+AUTHORIZED_USER = require_env("TELEGRAM_AUTHORIZED_USER")
+TOTP_SECRET     = require_env("TOTP_SECRET")
+DIGEST_CHAT_ID  = require_env("TELEGRAM_AUTHORIZED_USER")  # same as authorized user
+DIGEST_TIME     = env("DIGEST_TIME", "06:30")              # 24h local server time
+
+WAZUH_API       = env("WAZUH_API_URL",  "https://127.0.0.1:55000")
+WAZUH_USER      = require_env("WAZUH_API_USER")
+WAZUH_PASS      = require_env("WAZUH_API_PASS")
+
+INDEXER_URL     = env("INDEXER_URL",  "https://localhost:9200")
+INDEXER_USER    = require_env("INDEXER_USER")
+INDEXER_PASS    = require_env("INDEXER_PASS")
+
+MINIBOLT_MEMPOOL = env("MINIBOLT_MEMPOOL_URL", "http://minibolt.local:4081")
+LND_REST         = env("LND_REST_URL",         "https://minibolt.local:8080")
+LND_MACAROON_B64 = require_env("LND_READONLY_MACAROON_B64")
+
+UPTIME_KUMA_URL  = env("UPTIME_KUMA_URL", "http://localhost:3001/api/status-page/default")
+
+LOG_FILE         = env("COMMANDER_LOG", "/var/ossec/logs/commander-errors.log")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Logging
+# ══════════════════════════════════════════════════════════════════════════════
+
+def log(msg: str) -> None:
+    entry = f"{time.ctime()}: {msg}\n"
+    print(entry, end="")
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(entry)
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Core Helpers
+# ══════════════════════════════════════════════════════════════════════════════
+
+def send_message(chat_id: str, text: str) -> None:
+    """Send a Telegram message, chunking if over 4000 chars."""
+    telegram.send(BOT_TOKEN, chat_id, text)
+
+
+# ── Wazuh token cache ────────────────────────────────────────────────────────
+_wazuh_token: str | None = None
+_wazuh_token_exp: float = 0
+
+
+def get_wazuh_token() -> str | None:
+    global _wazuh_token, _wazuh_token_exp
+    if _wazuh_token and time.time() < _wazuh_token_exp:
+        return _wazuh_token
+    token = wazuh.get_token(WAZUH_API, WAZUH_USER, WAZUH_PASS)
+    if token:
+        _wazuh_token = token
+        _wazuh_token_exp = time.time() + 840  # 14 min (tokens last ~15 min)
+    return token
+
+
+def wazuh_get(endpoint: str, token: str) -> dict:
+    return wazuh.api_get(WAZUH_API, endpoint, token)
+
+
+def indexer_search(query: dict) -> dict:
+    return wazuh.indexer_search(INDEXER_URL, INDEXER_USER, INDEXER_PASS, query)
+
+
+def get_lnd_headers() -> dict:
+    macaroon = base64.b64decode(LND_MACAROON_B64).hex()
+    return {"Grpc-Metadata-macaroon": macaroon}
+
+
+def lnd_get(endpoint: str) -> dict:
+    try:
+        r = requests.get(
+            f"{LND_REST}{endpoint}",
+            headers=get_lnd_headers(),
+            verify=False,
+            timeout=10
+        )
+        return r.json()
+    except Exception:
+        return {}
+
+
+def mempool_get(endpoint: str, public: bool = False) -> dict | str:
+    try:
+        base = "https://mempool.space" if public else MINIBOLT_MEMPOOL
+        r    = requests.get(f"{base}{endpoint}", timeout=10)
+        try:
+            return r.json()
+        except Exception:
+            return r.text.strip()
+    except Exception:
+        return {}
+
+
+def get_uptime_kuma_status() -> tuple[list, list]:
+    try:
+        r        = requests.get(UPTIME_KUMA_URL, timeout=10)
+        data     = r.json()
+        monitors = data.get("publicGroupList", [])
+        up, down = [], []
+        for group in monitors:
+            for monitor in group.get("monitorList", []):
+                name   = monitor.get("name", "?")
+                status = monitor.get("status", 0)
+                (up if status == 1 else down).append(name)
+        return up, down
+    except Exception:
+        return [], []
+
+
+def format_table_row(rule_id, level, count, desc) -> str:
+    """Format a rule as a compact 2-line list entry."""
+    words  = str(desc).split()
+    line1, line2 = [], []
+    length = 0
+    for word in words:
+        if length + len(word) + 1 <= 35:
+            line1.append(word)
+            length += len(word) + 1
+        else:
+            line2.append(word)
+
+    desc_fmt = ' '.join(line1)
+    if line2:
+        line2_str = ' '.join(line2)
+        if len(line2_str) > 35:
+            line2_str = line2_str[:32].rsplit(' ', 1)[0] + '...'
+        desc_fmt += '\n' + line2_str
+
+    return f"<b>{rule_id}</b> (L{level}) \u00d7{count}\n{desc_fmt}\n\n"
+
+
+# esc() imported from sentinel.telegram
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# System Info Helpers (shared by /status and /digest)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def get_system_stats() -> dict:
+    """Gather local system metrics."""
+    return {
+        "uptime": subprocess.getoutput("uptime -p"),
+        "load":   subprocess.getoutput("cat /proc/loadavg | awk '{print $1, $2, $3}'"),
+        "mem":    subprocess.getoutput("free -h | grep Mem | awk '{print $3 \"/\" $2}'"),
+        "disk":   subprocess.getoutput("df -h / | tail -1 | awk '{print $5 \" used (\" $3 \"/\" $2 \")}\"'"),
+        "banned": subprocess.getoutput("iptables -L INPUT -n | grep -c DROP").strip(),
+    }
+
+
+def parse_ban_history() -> dict[str, int]:
+    """Parse 24h ban history log and return {rule_id: count}."""
+    ar_log = subprocess.getoutput(
+        "grep 'Banned' /var/ossec/logs/ban-history.log | "
+        "awk -v d=\"$(date -d '24 hours ago' '+%Y/%m/%d %H:%M:%S')\" '$0 > d'"
+    )
+    rule_counts: dict[str, int] = {}
+    for line in ar_log.splitlines():
+        match = re.search(r'\(Rule (\w+)\)', line)
+        if match:
+            rid = match.group(1)
+            rule_counts[rid] = rule_counts.get(rid, 0) + 1
+    return rule_counts
+
+
+def lookup_rules(rule_ids: list[str], token: str) -> dict[str, dict]:
+    """Batch-fetch rule metadata from Wazuh API. Returns {id: {level, description}}."""
+    if not rule_ids or not token:
+        return {}
+    ids_param = ",".join(rule_ids)
+    data = wazuh_get(f"/rules?rule_ids={ids_param}", token)
+    result: dict[str, dict] = {}
+    for item in data.get("data", {}).get("affected_items", []):
+        rid = str(item.get("id", ""))
+        result[rid] = {
+            "level": item.get("level", "?"),
+            "description": item.get("description", "Unknown"),
+        }
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TOTP Authentication
+# ══════════════════════════════════════════════════════════════════════════════
+
+def verify_totp(code: str) -> bool:
+    return pyotp.TOTP(TOTP_SECRET).verify(code, valid_window=1)
+
+
+def require_totp(chat_id: str, arg: str) -> tuple[str | None, bool]:
+    parts = arg.rsplit(" ", 1)
+    if len(parts) < 2:
+        send_message(chat_id, "⛔ TOTP required. Usage: /command [args] [totp]")
+        return None, False
+    actual_arg, code = parts[0], parts[1]
+    if not verify_totp(code):
+        send_message(chat_id, "⛔ Invalid or expired TOTP code")
+        return None, False
+    return actual_arg, True
+
+
+def require_totp_only(chat_id: str, arg: str) -> bool:
+    code = arg.strip()
+    if not code:
+        send_message(chat_id, "⛔ TOTP required. Usage: /command [totp]")
+        return False
+    if not verify_totp(code):
+        send_message(chat_id, "⛔ Invalid or expired TOTP code")
+        return False
+    return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Read-Only Commands
+# ══════════════════════════════════════════════════════════════════════════════
+
+def cmd_help(chat_id: str) -> None:
+    text  = "<b>Wazuh Commander</b>\n\n"
+    text += "<b>Read-Only:</b>\n"
+    text += "/status - System overview + active response stats\n"
+    text += "/event [id] - Full detail on a specific alert\n"
+    text += "/agents - List all agents\n"
+    text += "/alerts - Recent high-level alerts (Level 8+)\n"
+    text += "/top - Top triggered rules (24h)\n"
+    text += "/blocked - Currently blocked IPs + recent ban history\n"
+    text += "/disk - Disk usage\n"
+    text += "/uptime - System uptime\n"
+    text += "/services - Docker container status\n"
+    text += "/digest - Send daily digest now\n\n"
+    text += "<b>Active Response (TOTP required):</b>\n"
+    text += "/block [ip] [totp] - Block an IP\n"
+    text += "/unblock [ip] [totp] - Unblock an IP\n"
+    text += "/closeport [port] [totp] - Close a UFW port\n"
+    text += "/openport [port] [totp] - Open a UFW port\n"
+    text += "/lockdown [totp] - Deny all except SSH\n"
+    text += "/restore [totp] - Restore normal firewall\n"
+    text += "/restart [target] [totp] - Restart service or agent\n"
+    text += "/syscheck [agent_id] [totp] - Run integrity scan\n"
+    text += "/shutdown [totp] - Shutdown server\n\n"
+    text += "/help - This menu"
+    send_message(chat_id, text)
+
+
+def cmd_status(chat_id: str) -> None:
+    token = get_wazuh_token()
+    if not token:
+        send_message(chat_id, "Failed to authenticate with Wazuh API")
+        return
+
+    agents       = wazuh_get("/agents/summary/status", token)
+    agent_data   = agents.get("data", {}).get("connection", {})
+    active       = agent_data.get("active", 0)
+    disconnected = agent_data.get("disconnected", 0)
+    total        = agent_data.get("total", 0)
+
+    stats = get_system_stats()
+    rule_counts = parse_ban_history()
+
+    rule_table = ""
+    if rule_counts:
+        rule_table = "\n<b>Active Response Events (24h)</b>\n\n"
+        rules_meta = lookup_rules(list(rule_counts.keys()), token)
+        for rid, count in sorted(rule_counts.items(), key=lambda x: -x[1]):
+            meta  = rules_meta.get(rid, {})
+            level = meta.get("level", "?")
+            desc  = meta.get("description", "Unknown")
+            rule_table += format_table_row(rid, level, count, desc)
+
+    text  = "<b>System Status</b>\n\n"
+    text += f"<b>Uptime:</b> {stats['uptime']}\n"
+    text += f"<b>Load (1m/5m/15m):</b> {stats['load']}\n"
+    text += f"<b>Memory:</b> {stats['mem']}\n"
+    text += f"<b>Disk:</b> {stats['disk']}\n\n"
+    text += f"<b>Agents:</b> {active} active / {disconnected} disconnected / {total} total\n"
+    text += f"<b>Banned IPs:</b> {stats['banned']} currently active\n"
+    text += rule_table
+    send_message(chat_id, text)
+
+
+def cmd_event(chat_id: str, arg: str) -> None:
+    alert_id = arg.strip()
+    if not alert_id:
+        send_message(chat_id, "Usage: /event [alert_id]")
+        return
+
+    result = indexer_search({"query": {"term": {"id": alert_id}}})
+    hits   = result.get("hits", {}).get("hits", [])
+
+    if not hits:
+        send_message(chat_id, f"No alert found with ID: {alert_id}")
+        return
+
+    a           = hits[0].get("_source", {})
+    rule        = a.get("rule", {})
+    agent       = a.get("agent", {})
+    geo         = a.get("GeoLocation", {})
+    data_fields = a.get("data", {})
+    full_log    = a.get("full_log", "")
+
+    text  = "<b>Alert Detail</b>\n\n"
+    text += f"<b>ID:</b> {a.get('id')}\n"
+    text += f"<b>Level:</b> {rule.get('level')}\n"
+    text += f"<b>Rule:</b> {rule.get('id')} - {rule.get('description')}\n"
+    text += f"<b>Agent:</b> {agent.get('name')}\n"
+    text += f"<b>Time:</b> {a.get('timestamp', '')[:19]}\n"
+    text += f"<b>Groups:</b> {', '.join(rule.get('groups', []))}\n"
+
+    if geo:
+        country = geo.get("country_name", "")
+        loc     = geo.get("location", {})
+        text += f"<b>GeoLocation:</b> {country} ({loc.get('lat')}, {loc.get('lon')})\n"
+
+    if data_fields:
+        text += "\n<b>Data:</b>\n"
+        for k, v in data_fields.items():
+            text += f"  {esc(str(k))}: {esc(str(v))}\n"
+
+    if full_log:
+        text += f"\n<b>Full Log:</b>\n<pre>{esc(full_log[:1000])}</pre>"
+
+    send_message(chat_id, text)
+
+
+def cmd_agents(chat_id: str) -> None:
+    token = get_wazuh_token()
+    if not token:
+        send_message(chat_id, "Failed to authenticate with Wazuh API")
+        return
+
+    data   = wazuh_get("/agents?limit=50", token)
+    agents = data.get("data", {}).get("affected_items", [])
+
+    text = "<b>Agents</b>\n\n"
+    for a in agents:
+        emoji    = "🟢" if a.get("status") == "active" else "🔴"
+        name     = a.get("name", "unknown")
+        agent_id = a.get("id", "?")
+        ip       = a.get("ip", "?")
+        os_name  = a.get("os", {}).get("name", "?")
+        text += f"{emoji} <b>{name}</b> (ID: {agent_id})\n"
+        text += f"   IP: {ip} | OS: {os_name}\n"
+
+    send_message(chat_id, text)
+
+
+def cmd_alerts(chat_id: str) -> None:
+    query = {
+        "size": 10,
+        "sort": [{"timestamp": {"order": "desc"}}],
+        "query": {"range": {"rule.level": {"gte": 8}}}
+    }
+    result = indexer_search(query)
+    hits   = result.get("hits", {}).get("hits", [])
+
+    if not hits:
+        send_message(chat_id, "No recent high-level alerts")
+        return
+
+    text = "<b>Recent Alerts (Level 8+)</b>\n\n"
+    for h in hits:
+        a     = h.get("_source", {})
+        rule  = a.get("rule", {})
+        agent = a.get("agent", {})
+        text += f"<b>L{rule.get('level')}</b> | {agent.get('name')} | {rule.get('description')}\n"
+        text += f"  {a.get('timestamp', '')[:19]}\n"
+        text += f"  ID: <code>{a.get('id')}</code>\n\n"
+
+    send_message(chat_id, text)
+
+
+def cmd_top(chat_id: str) -> None:
+    query = {
+        "size": 0,
+        "query": {"range": {"timestamp": {"gte": "now-24h"}}},
+        "aggs": {
+            "top_rules": {
+                "terms": {"field": "rule.id", "size": 10, "order": {"_count": "desc"}},
+                "aggs": {
+                    "rule_desc":  {"terms": {"field": "rule.description", "size": 1}},
+                    "rule_level": {"terms": {"field": "rule.level",       "size": 1}}
+                }
+            }
+        }
+    }
+    result  = indexer_search(query)
+    buckets = result.get("aggregations", {}).get("top_rules", {}).get("buckets", [])
+
+    if not buckets:
+        send_message(chat_id, "No alert data found in last 24h")
+        return
+
+    text = "<b>Top Triggered Rules (24h)</b>\n\n"
+    for bucket in buckets:
+        rule_id = bucket.get("key", "?")
+        count   = bucket.get("doc_count", 0)
+        desc_b  = bucket.get("rule_desc",  {}).get("buckets", [])
+        level_b = bucket.get("rule_level", {}).get("buckets", [])
+        desc    = desc_b[0].get("key",  "N/A") if desc_b  else "N/A"
+        level   = level_b[0].get("key", "?")   if level_b else "?"
+        text   += format_table_row(rule_id, level, count, desc)
+
+    send_message(chat_id, text)
+
+
+def cmd_blocked(chat_id: str) -> None:
+    current = subprocess.getoutput("iptables -L INPUT -n | grep DROP | head -20")
+    recent  = subprocess.getoutput("tail -20 /var/ossec/logs/ban-history.log")
+
+    send_message(chat_id,
+        f"<b>Currently Banned (active, max 20)</b>\n"
+        f"<pre>{esc(current) or 'None'}</pre>"
+    )
+    send_message(chat_id,
+        f"<b>Recent Bans (last 20)</b>\n"
+        f"<pre>{esc(recent) or 'None'}</pre>"
+    )
+
+
+def cmd_disk(chat_id: str) -> None:
+    result = subprocess.getoutput(
+        "df -h --exclude-type=tmpfs --exclude-type=devtmpfs"
+    )
+    send_message(chat_id, f"<b>Disk Usage</b>\n\n<pre>{esc(result)}</pre>")
+
+
+def cmd_uptime(chat_id: str) -> None:
+    send_message(chat_id, f"<pre>{subprocess.getoutput('uptime')}</pre>")
+
+
+def cmd_services(chat_id: str) -> None:
+    result = subprocess.getoutput(
+        "DOCKER_HOST=unix:///run/user/1001/docker.sock "
+        "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>&1"
+    )
+    send_message(chat_id, f"<b>Docker Services</b>\n\n<pre>{result or 'No output'}</pre>")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Daily Digest
+# ══════════════════════════════════════════════════════════════════════════════
+
+def cmd_digest(chat_id: str) -> None:
+    log("digest: starting")
+    lines = ["<b>\u2600\ufe0f Daily Digest</b>\n"]
+
+    # ── System ───────────────────────────────────────────────────────
+    stats = get_system_stats()
+
+    lines.append("<b>\U0001f5a5 System</b>")
+    lines.append(f"Uptime: {stats['uptime']}")
+    lines.append(f"Load (1m/5m/15m): {stats['load']}")
+    lines.append(f"Memory: {stats['mem']}")
+    lines.append(f"Disk: {stats['disk']}\n")
+
+    # ── Agents ───────────────────────────────────────────────────────
+    token      = get_wazuh_token()
+    agent_data = {}
+    if token:
+        agents     = wazuh_get("/agents/summary/status", token)
+        agent_data = agents.get("data", {}).get("connection", {})
+
+    active_agents = agent_data.get("active", "?")
+    disconnected  = agent_data.get("disconnected", 0)
+    agent_line    = f"Agents: {active_agents} active"
+    if disconnected:
+        agent_line += f", \u26a0\ufe0f {disconnected} disconnected"
+    lines.append(agent_line + "\n")
+
+    # ── Security ─────────────────────────────────────────────────────
+    rule_counts = parse_ban_history()
+    total_bans  = sum(rule_counts.values())
+    lines.append("<b>\U0001f6e1 Security</b>")
+    lines.append(f"Bans (24h): {total_bans} | Active: {stats['banned']}")
+
+    if rule_counts and token:
+        top_rids   = [rid for rid, _ in sorted(rule_counts.items(), key=lambda x: -x[1])[:5]]
+        rules_meta = lookup_rules(top_rids, token)
+        for rid in top_rids:
+            count = rule_counts[rid]
+            meta  = rules_meta.get(rid, {})
+            level = meta.get("level", "?")
+            desc  = meta.get("description", "Unknown")
+            if len(str(desc)) > 35:
+                desc = str(desc)[:32].rsplit(' ', 1)[0] + '...'
+            lines.append(f"  <b>{rid}</b> (L{level}) \u00d7{count} \u2014 {desc}")
+
+    # Level 10+ by level descending
+    result  = indexer_search({
+        "size": 0,
+        "query": {"bool": {"must": [
+            {"range": {"timestamp":  {"gte": "now-24h"}}},
+            {"range": {"rule.level": {"gte": 10}}}
+        ]}},
+        "aggs": {"by_level": {
+            "terms": {"field": "rule.level", "size": 10, "order": {"_key": "desc"}},
+            "aggs": {"by_rule": {"terms": {"field": "rule.description", "size": 1}}}
+        }}
+    })
+    buckets = result.get("aggregations", {}).get("by_level", {}).get("buckets", [])
+
+    if buckets:
+        lines.append("  Critical alerts (24h):")
+        for b in buckets:
+            level  = b.get("key", "?")
+            count  = b.get("doc_count", 0)
+            rule_b = b.get("by_rule", {}).get("buckets", [])
+            desc   = rule_b[0].get("key", "Unknown") if rule_b else "Unknown"
+            if len(desc) > 35:
+                desc = desc[:32].rsplit(' ', 1)[0] + '...'
+            lines.append(f"  L{level} \u00d7{count} \u2014 {desc}")
+    else:
+        lines.append("  No Level 10+ alerts \u2705")
+
+    lines.append("")
+
+    # ── Services ─────────────────────────────────────────────────────
+    up_list, down_list = get_uptime_kuma_status()
+    lines.append("<b>\U0001f4e1 Services</b>")
+    if down_list:
+        lines.append(f"\U0001f534 Down: {', '.join(down_list)}")
+    else:
+        lines.append(f"\U0001f7e2 All {len(up_list)} monitors up")
+    lines.append("")
+
+    # ── Bitcoin ──────────────────────────────────────────────────────
+    lines.append("<b>\u20bf Bitcoin</b>")
+
+    local_height  = mempool_get("/api/blocks/tip/height")
+    public_height = mempool_get("/api/blocks/tip/height", public=True)
+
+    try:
+        lag = int(public_height) - int(local_height)
+        if lag > 6:
+            lines.append(f"\u26a0\ufe0f Node lagging {lag} blocks ({local_height} vs {public_height})")
+        else:
+            lines.append(f"Block height: {local_height} \u2705")
+    except Exception:
+        lines.append(f"Block height: local={local_height} public={public_height}")
+
+    fees = mempool_get("/api/v1/fees/recommended")
+    if isinstance(fees, dict):
+        lines.append(
+            f"Fees: {fees.get('fastestFee')} / "
+            f"{fees.get('halfHourFee')} / "
+            f"{fees.get('hourFee')} sat/vB (fast/30m/1h)"
+        )
+
+    lnd_info = lnd_get("/v1/getinfo")
+    if lnd_info:
+        synced = "\u2705" if lnd_info.get("synced_to_chain") else "\u26a0\ufe0f not synced"
+        peers  = lnd_info.get("num_peers", "?")
+        lines.append(f"LND: {synced} | Peers: {peers}")
+    else:
+        lines.append("LND: \u26a0\ufe0f unreachable")
+
+    channels = lnd_get("/v1/channels")
+    if channels:
+        ch_list   = channels.get("channels", [])
+        active_ch = sum(1 for c in ch_list if c.get("active"))
+        inactive  = len(ch_list) - active_ch
+        local_bal = sum(int(c.get("local_balance", 0)) for c in ch_list)
+        ch_status = "\u2705" if inactive == 0 else f"\u26a0\ufe0f {inactive} inactive"
+        lines.append(f"Channels: {active_ch} active {ch_status} | Local: {local_bal:,} sats")
+
+    send_message(chat_id, "\n".join(lines))
+    log("digest: sent")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Active Response Commands (TOTP required)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def cmd_block(chat_id: str, arg: str) -> None:
+    ip, valid = require_totp(chat_id, arg)
+    if not valid:
+        return
+    try:
+        ip = validated_ip(ip)
+    except ValueError:
+        send_message(chat_id, f"\u26d4 Invalid IP address: {esc(ip)}")
+        return
+    subprocess.run(["iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"], check=True)
+    log(f"block: manually blocked {ip}")
+    send_message(chat_id, f"\U0001f6ab Blocked {ip}")
+
+
+def cmd_unblock(chat_id: str, arg: str) -> None:
+    ip, valid = require_totp(chat_id, arg)
+    if not valid:
+        return
+    try:
+        ip = validated_ip(ip)
+    except ValueError:
+        send_message(chat_id, f"\u26d4 Invalid IP address: {esc(ip)}")
+        return
+    result = subprocess.run(
+        ["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"],
+        capture_output=True, text=True,
+    )
+    log(f"unblock: {ip}")
+    send_message(chat_id, f"\u2705 Unblocked {ip}\n{result.stderr}")
+
+
+def cmd_closeport(chat_id: str, arg: str) -> None:
+    port, valid = require_totp(chat_id, arg)
+    if not valid:
+        return
+    try:
+        port = validated_port(port)
+    except ValueError:
+        send_message(chat_id, f"\u26d4 Invalid port: {esc(port)}")
+        return
+    result = subprocess.run(["ufw", "deny", port], capture_output=True, text=True)
+    send_message(chat_id, f"\U0001f6ab Port {port} closed\n{result.stdout}")
+
+
+def cmd_openport(chat_id: str, arg: str) -> None:
+    port, valid = require_totp(chat_id, arg)
+    if not valid:
+        return
+    try:
+        port = validated_port(port)
+    except ValueError:
+        send_message(chat_id, f"\u26d4 Invalid port: {esc(port)}")
+        return
+    result = subprocess.run(["ufw", "allow", port], capture_output=True, text=True)
+    send_message(chat_id, f"\u2705 Port {port} opened\n{result.stdout}")
+
+
+def cmd_lockdown(chat_id: str, arg: str) -> None:
+    if not require_totp_only(chat_id, arg):
+        return
+    subprocess.getoutput("cp /etc/ufw/user.rules /etc/ufw/user.rules.pre-lockdown")
+    subprocess.getoutput("cp /etc/ufw/user6.rules /etc/ufw/user6.rules.pre-lockdown")
+    subprocess.getoutput("ufw --force reset")
+    subprocess.getoutput("ufw default deny incoming")
+    subprocess.getoutput("ufw default deny outgoing")
+    subprocess.getoutput("ufw allow in 22/tcp")
+    subprocess.getoutput("ufw allow out 53")
+    subprocess.getoutput("ufw allow out 443/tcp")
+    subprocess.getoutput("ufw --force enable")
+    log("lockdown: activated")
+    send_message(chat_id, "\U0001f512 LOCKDOWN ACTIVE\nAll ports closed except SSH.\nUse /restore [totp] to return to normal.")
+
+
+def cmd_restore(chat_id: str, arg: str) -> None:
+    if not require_totp_only(chat_id, arg):
+        return
+    if not os.path.exists("/etc/ufw/user.rules.pre-lockdown"):
+        send_message(chat_id, "⛔ No pre-lockdown backup found. Cannot restore.")
+        return
+    subprocess.getoutput("cp /etc/ufw/user.rules.pre-lockdown /etc/ufw/user.rules")
+    subprocess.getoutput("cp /etc/ufw/user6.rules.pre-lockdown /etc/ufw/user6.rules")
+    subprocess.getoutput("ufw --force enable")
+    log("lockdown: restored")
+    send_message(chat_id, "\u2705 Firewall restored to pre-lockdown state")
+
+
+def cmd_restart(chat_id: str, arg: str) -> None:
+    target, valid = require_totp(chat_id, arg)
+    if not valid:
+        return
+    if target == "manager":
+        subprocess.getoutput("systemctl restart wazuh-manager")
+        send_message(chat_id, "\u2705 Wazuh manager restarted")
+    elif target:
+        token = get_wazuh_token()
+        if token:
+            wazuh_get(f"/agents/{target}/restart", token)
+            send_message(chat_id, f"\u2705 Restart signal sent to agent {target}")
+    else:
+        send_message(chat_id, "Usage: /restart manager [totp] or /restart [agent_id] [totp]")
+
+
+def cmd_syscheck(chat_id: str, arg: str) -> None:
+    agent_id, valid = require_totp(chat_id, arg)
+    if not valid:
+        return
+    token = get_wazuh_token()
+    if token:
+        requests.put(
+            f"{WAZUH_API}/syscheck/{agent_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            verify=False,
+            timeout=10
+        )
+        send_message(chat_id, f"\u2705 Integrity scan started on agent {agent_id}")
+
+
+def cmd_shutdown(chat_id: str, arg: str) -> None:
+    if not require_totp_only(chat_id, arg):
+        return
+    log("shutdown: initiated via Telegram")
+    send_message(chat_id, "\u2622\ufe0f SHUTDOWN INITIATED \u2014 Server going down now")
+    time.sleep(2)
+    subprocess.Popen(["shutdown", "-h", "+0"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Update Dispatcher
+# ══════════════════════════════════════════════════════════════════════════════
+
+COMMANDS = {
+    "/help":      lambda c, a: cmd_help(c),
+    "/start":     lambda c, a: cmd_help(c),
+    "/status":    lambda c, a: cmd_status(c),
+    "/event":     cmd_event,
+    "/agents":    lambda c, a: cmd_agents(c),
+    "/alerts":    lambda c, a: cmd_alerts(c),
+    "/top":       lambda c, a: cmd_top(c),
+    "/blocked":   lambda c, a: cmd_blocked(c),
+    "/disk":      lambda c, a: cmd_disk(c),
+    "/uptime":    lambda c, a: cmd_uptime(c),
+    "/services":  lambda c, a: cmd_services(c),
+    "/digest":    lambda c, a: cmd_digest(c),
+    "/block":     cmd_block,
+    "/unblock":   cmd_unblock,
+    "/closeport": cmd_closeport,
+    "/openport":  cmd_openport,
+    "/lockdown":  cmd_lockdown,
+    "/restore":   cmd_restore,
+    "/restart":   cmd_restart,
+    "/syscheck":  cmd_syscheck,
+    "/shutdown":  cmd_shutdown,
+}
+
+
+def process_update(update: dict) -> None:
+    message = update.get("message", {})
+    chat_id = str(message.get("chat", {}).get("id", ""))
+    user_id = str(message.get("from", {}).get("id", ""))
+    text    = message.get("text", "").strip()
+
+    if user_id != AUTHORIZED_USER:
+        send_message(chat_id, "Unauthorized")
+        return
+
+    parts   = text.split(maxsplit=1)
+    command = parts[0].lower() if parts else ""
+    arg     = parts[1].strip() if len(parts) > 1 else ""
+
+    log(f"cmd: {command}")
+    handler = COMMANDS.get(command)
+    if handler:
+        handler(chat_id, arg)
+    else:
+        send_message(chat_id, f"Unknown command: {command}\nType /help for available commands")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Main Loop
+# ══════════════════════════════════════════════════════════════════════════════
+
+def main() -> None:
+    log("commander: starting")
+    offset      = 0
+    digest_sent = None
+    running     = True
+
+    def _shutdown(signum, frame):
+        nonlocal running
+        log(f"commander: received signal {signum}, shutting down")
+        running = False
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT,  _shutdown)
+
+    digest_h, digest_m = (int(x) for x in DIGEST_TIME.split(":"))
+    digest_minutes = digest_h * 60 + digest_m
+
+    while running:
+        try:
+            now   = time.localtime()
+            today = (now.tm_year, now.tm_mon, now.tm_mday)
+            now_minutes = now.tm_hour * 60 + now.tm_min
+            if now_minutes >= digest_minutes and digest_sent != today:
+                cmd_digest(DIGEST_CHAT_ID)
+                digest_sent = today
+
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+            r   = requests.get(url, params={"offset": offset, "timeout": 30}, timeout=35)
+            for update in r.json().get("result", []):
+                offset = update["update_id"] + 1
+                if "message" in update:
+                    try:
+                        process_update(update)
+                    except Exception as e:
+                        log(f"process_update error: {traceback.format_exc()}")
+                        send_message(
+                            str(update.get("message", {}).get("chat", {}).get("id", "")),
+                            f"⛔ Error: {str(e)}"
+                        )
+        except Exception:
+            time.sleep(5)
+
+    log("commander: stopped")
+
+
+if __name__ == "__main__":
+    main()

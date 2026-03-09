@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""
+notify-ban.py - Wazuh Active Response + Telegram Notification Script
+======================================================================
+Deployed as a Wazuh active response binary. Handles the two-phase
+firewall-drop handshake, bans the offending IP via iptables, sends
+a Telegram notification, and writes to the ban history log.
+
+Deployment:
+  sudo cp notify-ban.py /var/ossec/active-response/bin/notify-ban.py
+  sudo chmod 750 /var/ossec/active-response/bin/notify-ban.py
+  sudo chown root:wazuh /var/ossec/active-response/bin/notify-ban.py
+
+Environment variables are loaded from /etc/wazuh-commander.env
+(injected via systemd EnvironmentFile or sourced at runtime).
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.environ.get(
+    "SENTINEL_LIB", os.path.dirname(os.path.abspath(__file__))))
+
+from sentinel import telegram
+from sentinel.config import env, SILENT_RULES
+
+# ── Load config from environment ────────────────────────────────────────────
+BOT_TOKEN        = env("TELEGRAM_BOT_TOKEN")
+FULL_LOG_CHAT_ID = env("TELEGRAM_FULL_LOG_CHAT_ID")
+CRITICAL_CHAT_ID = env("TELEGRAM_CRITICAL_CHAT_ID")
+
+BAN_LOG          = "/var/ossec/logs/ban-history.log"
+DEBUG_LOG        = None   # set to "/tmp/ar_debug.log" to enable
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def debug_log(msg: str) -> None:
+    if DEBUG_LOG:
+        with open(DEBUG_LOG, "a") as f:
+            f.write(f"{time.ctime()}: {msg}\n")
+
+
+def send_telegram(chat_id: str, message: str) -> None:
+    telegram.send(BOT_TOKEN, chat_id, message)
+
+
+def write_ban_log(ip: str, rule_id: str) -> None:
+    try:
+        with open(BAN_LOG, "a") as f:
+            f.write(f"{time.strftime('%Y/%m/%d %H:%M:%S')} Banned {ip} (Rule {rule_id})\n")
+    except Exception as e:
+        debug_log(f"Ban log write error: {e}")
+
+
+def lockfile_path(ip: str) -> str:
+    return f"/tmp/ar_ban_{ip.replace('.', '_')}.lock"
+
+
+def is_duplicate(ip: str, ttl: int = 10) -> bool:
+    """Return True if this IP was already processed within ttl seconds."""
+    path = lockfile_path(ip)
+    if os.path.exists(path):
+        if time.time() - os.path.getmtime(path) < ttl:
+            return True
+        # Stale lock — remove before recreating
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(time.time()).encode())
+        os.close(fd)
+    except FileExistsError:
+        return True
+    return False
+
+
+def run_firewall_drop(alert_json: str) -> None:
+    """
+    Execute firewall-drop via two-phase stdin/stdout handshake.
+    Phase 1: send alert JSON to firewall-drop
+    Phase 2: receive check_keys request, respond 'continue'
+    """
+    fw_bin = "/var/ossec/active-response/bin/firewall-drop"
+    try:
+        proc = subprocess.Popen(
+            [fw_bin],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        proc.stdin.write(alert_json.encode())
+        proc.stdin.flush()
+
+        # Read check_keys request
+        response = proc.stdout.readline()
+        debug_log(f"firewall-drop check_keys: {response.decode().strip()}")
+
+        # Send continue
+        proc.stdin.write(b"continue\n")
+        proc.stdin.flush()
+        proc.stdin.close()
+
+        stdout, stderr = proc.communicate(timeout=10)
+        debug_log(f"firewall-drop stdout: {stdout.decode().strip()}")
+        if stderr:
+            debug_log(f"firewall-drop stderr: {stderr.decode().strip()}")
+    except Exception as e:
+        debug_log(f"firewall-drop error: {e}")
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    try:
+        raw = sys.stdin.read()
+        debug_log(f"stdin: {raw[:500]}")
+        data = json.loads(raw)
+    except Exception as e:
+        debug_log(f"JSON parse error: {e}")
+        sys.exit(1)
+
+    action     = data.get("command", "")
+    alert      = data.get("parameters", {}).get("alert", {})
+    rule       = alert.get("rule", {})
+    agent      = alert.get("agent", {})
+    geo        = alert.get("GeoLocation", {})
+    src_data   = alert.get("data", {})
+
+    ip        = src_data.get("srcip", "")
+    rule_id   = str(rule.get("id", ""))
+    rule_desc = rule.get("description", "Unknown rule")
+    rule_lvl  = rule.get("level", 0)
+    agent_name = agent.get("name", "unknown")
+
+    country     = geo.get("country_name", "")
+    country_str = f" [{country}]" if country else ""
+
+    if not ip:
+        debug_log("No srcip found, exiting")
+        sys.exit(0)
+
+    # ── Firewall drop (both add and delete go through the binary) ────
+    run_firewall_drop(raw)
+
+    # ── Handle add (new ban) ─────────────────────────────────────────
+    if action == "add":
+        if is_duplicate(ip):
+            debug_log(f"Duplicate suppressed for {ip}")
+            sys.exit(0)
+
+        write_ban_log(ip, rule_id)
+
+        message = (
+            f"🔨 <b>Active Response: Banned</b>\n"
+            f"<b>IP:</b> {ip}{country_str}\n"
+            f"<b>Rule:</b> {rule_id} - {rule_desc}\n"
+            f"<b>Agent:</b> {agent_name}"
+        )
+
+        send_telegram(FULL_LOG_CHAT_ID, message)
+
+        if rule_id not in SILENT_RULES:
+            send_telegram(CRITICAL_CHAT_ID, f"🚨 {message}")
+
+    # ── Handle delete (ban expiry) ───────────────────────────────────
+    elif action == "delete":
+        message = (
+            f"✅ <b>Active Response: Unbanned</b>\n"
+            f"<b>IP:</b> {ip}{country_str}\n"
+            f"<b>Rule:</b> {rule_id}\n"
+            f"<b>Agent:</b> {agent_name}"
+        )
+        send_telegram(FULL_LOG_CHAT_ID, message)
+
+    else:
+        debug_log(f"Unknown action: {action}")
+
+
+if __name__ == "__main__":
+    main()
