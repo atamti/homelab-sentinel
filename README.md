@@ -1,4 +1,4 @@
-# wazuh-commander
+# homelab-sentinel
 
 A Telegram bot for real-time server monitoring and active response, built on top of Wazuh 4.x.
 
@@ -67,40 +67,42 @@ Provides read-only status commands and TOTP-protected active response commands v
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/yourusername/wazuh-commander
-cd wazuh-commander
-
-sudo cp .env.example /etc/wazuh-commander.env
-sudo chmod 600 /etc/wazuh-commander.env
-sudo nano /etc/wazuh-commander.env
+git clone https://github.com/atamti/homelab-sentinel
+cd homelab-sentinel
 ```
 
-### 2. Deploy scripts
+### 2. Deploy
 
 ```bash
-sudo cp telegram-commander.py /var/ossec/integrations/telegram-commander.py
-sudo chmod 750 /var/ossec/integrations/telegram-commander.py
+# Preview what will happen
+./deploy.sh --dry-run
 
-sudo cp notify-ban.py /var/ossec/active-response/bin/notify-ban.py
-sudo chmod 750 /var/ossec/active-response/bin/notify-ban.py
-sudo chown root:wazuh /var/ossec/active-response/bin/notify-ban.py
+# Deploy to localhost (run on the server)
+./deploy.sh
+
+# Or deploy to a remote server
+./deploy.sh user@host
 ```
 
-### 3. Install systemd service
+The deploy script will:
+- Copy `sentinel/` shared library to `/var/ossec/integrations/sentinel/`
+- Copy scripts to their Wazuh destinations
+- Install the systemd service
+- Seed `/etc/homelab-sentinel.env` from `.env.example` if it doesn't exist
+
+### 3. Configure environment
 
 ```bash
-sudo cp systemd/wazuh-telegram-bot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable wazuh-telegram-bot
-sudo systemctl start wazuh-telegram-bot
+sudo nano /etc/homelab-sentinel.env
 ```
 
-### 4. Create required log files
+Fill in your real Telegram bot token, chat IDs, Wazuh API credentials, etc.
+
+### 4. Start the service
 
 ```bash
-sudo touch /var/ossec/logs/ban-history.log
-sudo chown root:wazuh /var/ossec/logs/ban-history.log
-sudo chmod 664 /var/ossec/logs/ban-history.log
+sudo systemctl enable homelab-sentinel
+sudo systemctl start homelab-sentinel
 ```
 
 ### 5. LND readonly macaroon
@@ -111,7 +113,7 @@ On your Bitcoin node:
 sudo base64 -w 0 /data/lnd/data/chain/bitcoin/mainnet/readonly.macaroon
 ```
 
-Paste the output as `LND_READONLY_MACAROON_B64` in `/etc/wazuh-commander.env`.
+Paste the output as `LND_READONLY_MACAROON_B64` in `/etc/homelab-sentinel.env`.
 
 ### 6. Syntax check before restart
 
@@ -126,7 +128,7 @@ Register `notify-ban.py` as a command and add active response rules. See the Waz
 
 ## Security notes
 
-- Secrets are loaded from `/etc/wazuh-commander.env` (mode 600, root-owned)
+- Secrets are loaded from `/etc/homelab-sentinel.env` (mode 600, root-owned)
 - All destructive commands require a TOTP code (valid 30s window)
 - Only the configured `TELEGRAM_AUTHORIZED_USER` can issue commands
 - The LND readonly macaroon grants query access only — no payment or channel management capability

@@ -44,7 +44,7 @@ SENTINEL_DEST="/var/ossec/integrations/sentinel"
 SERVICE_FILE="homelab-sentinel.service"
 SERVICE_DEST="/etc/systemd/system/${SERVICE_FILE}"
 ENV_EXAMPLE=".env.example"
-ENV_DEST="/etc/wazuh-commander.env"
+ENV_DEST="/etc/homelab-sentinel.env"
 
 SERVICES_TO_RESTART=("homelab-sentinel")
 

@@ -11,7 +11,7 @@ Deployment:
   sudo chmod 750 /var/ossec/active-response/bin/notify-ban.py
   sudo chown root:wazuh /var/ossec/active-response/bin/notify-ban.py
 
-Environment variables are loaded from /etc/wazuh-commander.env
+Environment variables are loaded from /etc/homelab-sentinel.env
 (injected via systemd EnvironmentFile or sourced at runtime).
 """
 

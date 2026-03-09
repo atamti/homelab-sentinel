@@ -4,7 +4,7 @@ After=network.target wazuh-manager.service
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/wazuh-commander.env
+EnvironmentFile=/etc/homelab-sentinel.env
 ExecStart=/var/ossec/framework/python/bin/python3 /var/ossec/integrations/telegram-commander.py
 Restart=on-failure
 RestartSec=10

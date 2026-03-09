@@ -93,7 +93,7 @@ class TestProcessUpdate:
         commander.process_update(update)
         commander._mock_post.assert_called_once()
         text = commander._mock_post.call_args[1]["json"]["text"]
-        assert "Wazuh Commander" in text
+        assert "Homelab Sentinel" in text
         assert "/status" in text
 
 

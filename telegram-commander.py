@@ -266,7 +266,7 @@ def require_totp_only(chat_id: str, arg: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def cmd_help(chat_id: str) -> None:
-    text  = "<b>Wazuh Commander</b>\n\n"
+    text  = "<b>Homelab Sentinel</b>\n\n"
     text += "<b>Read-Only:</b>\n"
     text += "/status - System overview + active response stats\n"
     text += "/event [id] - Full detail on a specific alert\n"
