@@ -1,0 +1,15 @@
+[Unit]
+Description=Homelab Sentinel - Telegram Command Bot
+After=network.target wazuh-manager.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/wazuh-commander.env
+ExecStart=/var/ossec/framework/python/bin/python3 /var/ossec/integrations/telegram-commander.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
