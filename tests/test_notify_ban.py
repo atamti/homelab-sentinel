@@ -1,0 +1,169 @@
+"""Tests for notify-ban.py."""
+
+import json
+import os
+import time
+from unittest.mock import patch, MagicMock
+
+from conftest import make_ar_input
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+class TestSendTelegram:
+    def test_sends_post_to_correct_url(self, notify_ban):
+        notify_ban.send_telegram("-100111", "hello")
+        notify_ban._mock_post.assert_called_once()
+        call_args = notify_ban._mock_post.call_args
+        assert "/sendMessage" in call_args[0][0]
+        assert call_args[1]["json"]["chat_id"] == "-100111"
+        assert call_args[1]["json"]["text"] == "hello"
+
+    def test_noop_when_token_missing(self, notify_ban):
+        notify_ban.BOT_TOKEN = ""
+        notify_ban.send_telegram("-100111", "hello")
+        notify_ban._mock_post.assert_not_called()
+
+    def test_noop_when_chat_id_missing(self, notify_ban):
+        notify_ban.send_telegram("", "hello")
+        notify_ban._mock_post.assert_not_called()
+
+    def test_swallows_network_error(self, notify_ban):
+        notify_ban._mock_post.side_effect = Exception("network down")
+        # Should not raise
+        notify_ban.send_telegram("-100111", "hello")
+
+
+class TestWriteBanLog:
+    def test_appends_to_file(self, notify_ban):
+        notify_ban.write_ban_log("1.2.3.4", "5710")
+        with open(notify_ban.BAN_LOG) as f:
+            content = f.read()
+        assert "Banned 1.2.3.4" in content
+        assert "Rule 5710" in content
+
+    def test_multiple_entries_append(self, notify_ban):
+        notify_ban.write_ban_log("1.1.1.1", "100")
+        notify_ban.write_ban_log("2.2.2.2", "200")
+        with open(notify_ban.BAN_LOG) as f:
+            lines = f.read().strip().splitlines()
+        assert len(lines) == 2
+
+
+class TestIsDuplicate:
+    def test_first_call_not_duplicate(self, notify_ban, tmp_path):
+        # Use a unique IP so no leftover lockfiles
+        assert notify_ban.is_duplicate("10.0.0.1") is False
+
+    def test_second_call_is_duplicate(self, notify_ban, tmp_path):
+        notify_ban.is_duplicate("10.0.0.2")
+        assert notify_ban.is_duplicate("10.0.0.2") is True
+
+    def test_expired_lock_is_not_duplicate(self, notify_ban, tmp_path):
+        notify_ban.is_duplicate("10.0.0.3")
+        lf = notify_ban.lockfile_path("10.0.0.3")
+        # Back-date the lockfile
+        old_time = time.time() - 20
+        os.utime(lf, (old_time, old_time))
+        assert notify_ban.is_duplicate("10.0.0.3") is False
+
+
+# ── Main flow ────────────────────────────────────────────────────────────────
+
+class TestMainAdd:
+    """Test the main() function with action=add."""
+
+    def test_ban_sends_to_full_log(self, notify_ban):
+        payload = make_ar_input(action="add", srcip="5.5.5.5", rule_id="5710")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "run_firewall_drop"),
+            patch.object(notify_ban, "is_duplicate", return_value=False),
+        ):
+            mock_stdin.read.return_value = payload
+            notify_ban.main()
+
+        # Should have sent at least one Telegram message (full log)
+        assert notify_ban._mock_post.call_count >= 1
+        first_call = notify_ban._mock_post.call_args_list[0]
+        assert "Banned" in first_call[1]["json"]["text"]
+
+    def test_silent_rule_skips_critical_channel(self, notify_ban):
+        payload = make_ar_input(action="add", srcip="6.6.6.6", rule_id="5710")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "run_firewall_drop"),
+            patch.object(notify_ban, "is_duplicate", return_value=False),
+        ):
+            mock_stdin.read.return_value = payload
+            notify_ban.main()
+
+        # 5710 is in SILENT_RULES -> only 1 message (full log), not 2
+        assert notify_ban._mock_post.call_count == 1
+
+    def test_non_silent_rule_sends_to_critical(self, notify_ban):
+        payload = make_ar_input(action="add", srcip="7.7.7.7", rule_id="99999")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "run_firewall_drop"),
+            patch.object(notify_ban, "is_duplicate", return_value=False),
+        ):
+            mock_stdin.read.return_value = payload
+            notify_ban.main()
+
+        # Non-silent -> 2 messages: full log + critical
+        assert notify_ban._mock_post.call_count == 2
+
+    def test_duplicate_suppressed(self, notify_ban):
+        payload = make_ar_input(action="add", srcip="8.8.8.8")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "run_firewall_drop"),
+            patch.object(notify_ban, "is_duplicate", return_value=True),
+        ):
+            mock_stdin.read.return_value = payload
+            with pytest.raises(SystemExit):
+                notify_ban.main()
+
+        # Duplicate -> no Telegram calls
+        notify_ban._mock_post.assert_not_called()
+
+
+class TestMainDelete:
+    def test_unban_sends_message(self, notify_ban):
+        payload = make_ar_input(action="delete", srcip="9.9.9.9")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "run_firewall_drop"),
+        ):
+            mock_stdin.read.return_value = payload
+            notify_ban.main()
+
+        assert notify_ban._mock_post.call_count == 1
+        text = notify_ban._mock_post.call_args[1]["json"]["text"]
+        assert "Unbanned" in text
+
+
+class TestMainEdgeCases:
+    def test_no_srcip_exits_cleanly(self, notify_ban):
+        payload = json.dumps({
+            "command": "add",
+            "parameters": {"alert": {"rule": {}, "agent": {}, "data": {}}},
+        })
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "run_firewall_drop"),
+        ):
+            mock_stdin.read.return_value = payload
+            with pytest.raises(SystemExit):
+                notify_ban.main()
+
+    def test_bad_json_exits(self, notify_ban):
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.read.return_value = "NOT JSON"
+            with pytest.raises(SystemExit):
+                notify_ban.main()
+
+
+# Import pytest for the raises helper used above
+import pytest
