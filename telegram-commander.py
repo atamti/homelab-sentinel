@@ -869,7 +869,10 @@ def main() -> None:
             today = (now.tm_year, now.tm_mon, now.tm_mday)
             now_minutes = now.tm_hour * 60 + now.tm_min
             if now_minutes >= digest_minutes and digest_sent != today:
-                cmd_digest(DIGEST_CHAT_ID)
+                try:
+                    cmd_digest(DIGEST_CHAT_ID)
+                except Exception:
+                    log(f"digest error: {traceback.format_exc()}")
                 digest_sent = today
 
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
@@ -886,6 +889,7 @@ def main() -> None:
                             f"⛔ Error: {str(e)}"
                         )
         except Exception:
+            log(f"main loop error: {traceback.format_exc()}")
             time.sleep(5)
 
     log("commander: stopped")
