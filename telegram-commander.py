@@ -179,7 +179,11 @@ def mempool_get(endpoint: str, public: bool = False) -> dict | str:
         try:
             return r.json()
         except Exception:
-            return r.text.strip()
+            # Only return plain text (e.g. block height number), not HTML
+            text = r.text.strip()
+            if len(text) < 200 and "<" not in text:
+                return text
+            return "error"
     except Exception:
         return {}
 
@@ -670,7 +674,7 @@ def cmd_digest(chat_id: str) -> None:
         else:
             lines.append(f"Block height: {local_height} \u2705")
     except Exception:
-        lines.append(f"Block height: local={local_height} public={public_height}")
+        lines.append(f"Block height: local={esc(str(local_height))} public={esc(str(public_height))}")
 
     fees = mempool_get("/api/v1/fees/recommended")
     if isinstance(fees, dict):
