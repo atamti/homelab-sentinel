@@ -202,12 +202,13 @@ copy_file "${SCRIPT_DIR}/${YAML_EXAMPLE}" "${YAML_DEST}.example"
 run_cmd "sudo chmod 644 ${YAML_DEST}.example"
 
 # Compare env keys (variable names before '=')
+# Note: live env file is mode 600 root-owned, so sudo is needed to read it
 if [[ "$DRY_RUN" != true && "$env_exists" == "yes" ]]; then
-    diff_cmd="comm -23 <(grep -oP '^[A-Z_]+(?==)' ${ENV_DEST}.example | sort) <(grep -oP '^[A-Z_]+(?==)' ${ENV_DEST} | sort)"
+    diff_cmd="comm -23 <(grep -oP '^[A-Z_]+(?==)' ${ENV_DEST}.example | sort) <(sudo grep -oP '^[A-Z_]+(?==)' ${ENV_DEST} | sort)"
     if [[ -n "$TARGET" ]]; then
-        new_env_keys=$(ssh "$TARGET" "bash -c '$diff_cmd'" 2>/dev/null || true)
+        new_env_keys=$(ssh "$TARGET" "sudo bash -c '$diff_cmd'" 2>/dev/null || true)
     else
-        new_env_keys=$(bash -c "$diff_cmd" 2>/dev/null || true)
+        new_env_keys=$(sudo bash -c "$diff_cmd" 2>/dev/null || true)
     fi
     if [[ -n "$new_env_keys" ]]; then
         warn "New env keys available in ${ENV_DEST}.example:"
@@ -220,11 +221,11 @@ fi
 
 # Compare YAML top-level keys
 if [[ "$DRY_RUN" != true && "$yaml_exists" == "yes" ]]; then
-    diff_cmd="comm -23 <(grep -oP '^[a-z_]+(?=:)' ${YAML_DEST}.example | sort) <(grep -oP '^[a-z_]+(?=:)' ${YAML_DEST} | sort)"
+    diff_cmd="comm -23 <(grep -oP '^[a-z_]+(?=:)' ${YAML_DEST}.example | sort) <(sudo grep -oP '^[a-z_]+(?=:)' ${YAML_DEST} | sort)"
     if [[ -n "$TARGET" ]]; then
-        new_yaml_keys=$(ssh "$TARGET" "bash -c '$diff_cmd'" 2>/dev/null || true)
+        new_yaml_keys=$(ssh "$TARGET" "sudo bash -c '$diff_cmd'" 2>/dev/null || true)
     else
-        new_yaml_keys=$(bash -c "$diff_cmd" 2>/dev/null || true)
+        new_yaml_keys=$(sudo bash -c "$diff_cmd" 2>/dev/null || true)
     fi
     if [[ -n "$new_yaml_keys" ]]; then
         warn "New YAML sections available in ${YAML_DEST}.example:"
