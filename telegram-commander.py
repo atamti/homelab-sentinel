@@ -571,10 +571,17 @@ def cmd_blocked(chat_id: str, arg: str = "") -> None:
 
 
 def cmd_disk(chat_id: str) -> None:
-    result = subprocess.getoutput(
+    raw = subprocess.getoutput(
         "df -h --exclude-type=tmpfs --exclude-type=devtmpfs"
     )
-    send_message(chat_id, f"<b>Disk Usage</b>\n\n<pre>{esc(result)}</pre>")
+    lines = raw.splitlines()
+    out = [f"{'Drive':<10} {'Size':>5} {'Used':>5} {'Avail':>5} {'Use%':>5}  Mounted on"]
+    for i, line in enumerate(lines[1:], 1):
+        cols = line.split()
+        if len(cols) >= 6:
+            mount = " ".join(cols[5:])
+            out.append(f"{'Drive ' + str(i):<10} {cols[1]:>5} {cols[2]:>5} {cols[3]:>5} {cols[4]:>5}  {mount}")
+    send_message(chat_id, f"<b>Disk Usage</b>\n\n<pre>{esc(chr(10).join(out))}</pre>")
 
 
 def cmd_uptime(chat_id: str) -> None:

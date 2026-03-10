@@ -153,7 +153,8 @@ class TestCmdDisk:
         commander.cmd_disk("123")
         text = commander._mock_post.call_args[1]["json"]["text"]
         assert "Disk Usage" in text
-        assert "/dev/sda1" in text
+        assert "Drive 1" in text
+        assert "/dev/sda1" not in text
 
 
 class TestCmdServices:
