@@ -49,6 +49,16 @@ _DEFAULTS = {
             "bitcoin": True,
         },
         "bitcoin_lag_warning_blocks": 6,
+        "thresholds": {
+            "load_per_core_amber": 1.0,
+            "load_per_core_red": 2.0,
+            "memory_amber": 70,
+            "memory_red": 90,
+            "disk_amber": 70,
+            "disk_red": 90,
+            "cpu_temp_amber": 70,
+            "cpu_temp_red": 85,
+        },
     },
     "integrations": {
         "bitcoin": {

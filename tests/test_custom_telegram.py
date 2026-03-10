@@ -46,6 +46,49 @@ class TestFormatAlert:
         assert "N/A" in msg
         assert level == 0
 
+    def test_unexpected_port_change_includes_details(self, custom_telegram):
+        alert = {
+            "rule": {"id": "100200", "level": 12, "description": "Unexpected port change"},
+            "agent": {"id": "002", "name": "minibolt"},
+            "timestamp": "2026-03-09T10:00:00",
+            "data": {},
+            "id": "port-1",
+            "full_log": "New listening port 9090/tcp detected",
+        }
+        msg, level, rule_id = custom_telegram.format_alert(alert)
+        assert "Agent:</b> 002" in msg
+        assert "Port:</b> 9090" in msg
+        assert "Status:</b> opened" in msg
+        assert "minibolt" not in msg
+
+    def test_unexpected_port_closed(self, custom_telegram):
+        alert = {
+            "rule": {"id": "100200", "level": 12, "description": "Unexpected port change"},
+            "agent": {"id": "001", "name": "masterserver"},
+            "timestamp": "2026-03-09T10:00:00",
+            "data": {},
+            "id": "port-2",
+            "full_log": "Previously active port 8080/tcp became inactive",
+        }
+        msg, level, rule_id = custom_telegram.format_alert(alert)
+        assert "Agent:</b> 001" in msg
+        assert "Port:</b> 8080" in msg
+        assert "Status:</b> closed" in msg
+
+    def test_unexpected_port_unparseable_log(self, custom_telegram):
+        alert = {
+            "rule": {"id": "100200", "level": 12, "description": "Unexpected port change"},
+            "agent": {"id": "003"},
+            "timestamp": "2026-03-09T10:00:00",
+            "data": {},
+            "id": "port-3",
+            "full_log": "",
+        }
+        msg, level, rule_id = custom_telegram.format_alert(alert)
+        assert "Agent:</b> 003" in msg
+        assert "Port:</b> unknown" in msg
+        assert "Status:</b> changed" in msg
+
 
 class TestMain:
     def test_sends_to_full_log(self, custom_telegram, tmp_path):

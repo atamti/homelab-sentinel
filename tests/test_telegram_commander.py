@@ -28,6 +28,51 @@ class TestFormatTableRow:
         assert "SSH brute force" in result
 
 
+class TestRag:
+    def test_green_below_amber(self, commander):
+        assert commander._rag(0.5, 1.0, 2.0) == "\U0001f7e2"
+
+    def test_amber_between(self, commander):
+        assert commander._rag(1.5, 1.0, 2.0) == "\U0001f7e1"
+
+    def test_red_above(self, commander):
+        assert commander._rag(3.0, 1.0, 2.0) == "\U0001f534"
+
+    def test_exact_amber_threshold(self, commander):
+        assert commander._rag(1.0, 1.0, 2.0) == "\U0001f7e1"
+
+    def test_exact_red_threshold(self, commander):
+        assert commander._rag(2.0, 1.0, 2.0) == "\U0001f534"
+
+
+class TestSimplifyServiceName:
+    def test_strips_http_prefix(self, commander):
+        assert commander._simplify_service_name("HTTP - myservice.local") == "myservice"
+
+    def test_strips_url_protocol(self, commander):
+        assert commander._simplify_service_name("https://myapp.local:8080/health") == "myapp"
+
+    def test_strips_tcp_prefix(self, commander):
+        assert commander._simplify_service_name("TCP Port - 10.0.0.1:22") == "10.0.0.1"
+
+    def test_plain_name_unchanged(self, commander):
+        assert commander._simplify_service_name("My Web App") == "My Web App"
+
+
+class TestValidHeight:
+    def test_int_is_valid(self, commander):
+        assert commander._valid_height(876543) is True
+
+    def test_numeric_string_is_valid(self, commander):
+        assert commander._valid_height("876543") is True
+
+    def test_error_string_is_invalid(self, commander):
+        assert commander._valid_height("error") is False
+
+    def test_empty_dict_is_invalid(self, commander):
+        assert commander._valid_height({}) is False
+
+
 # ── Send message / chunking ─────────────────────────────────────────────────
 
 class TestSendMessage:
@@ -107,8 +152,9 @@ class TestScoreChannelHealth:
             {"active": True, "capacity": "2000000", "local_balance": "600000"},
         ]
         emoji, label = commander.score_channel_health(channels)
-        assert emoji == "\u2705"
-        assert label == "healthy"
+        assert emoji == "\U0001f7e2"
+        assert "healthy" in label
+        assert "2 channels" in label
 
     def test_inactive_channel(self, commander):
         channels = [
@@ -118,22 +164,37 @@ class TestScoreChannelHealth:
         emoji, label = commander.score_channel_health(channels)
         assert "\U0001f534" in emoji
         assert "offline" in label
+        assert "1/2" in label
 
     def test_needs_rebalancing_low(self, commander):
         channels = [
             {"active": True, "capacity": "1000000", "local_balance": "50000"},  # 5% ratio
         ]
         emoji, label = commander.score_channel_health(channels)
-        assert "\u26a0" in emoji
+        assert "\U0001f7e1" in emoji
         assert "rebalancing" in label
+        assert "5%" in label
 
     def test_needs_rebalancing_high(self, commander):
         channels = [
             {"active": True, "capacity": "1000000", "local_balance": "950000"},  # 95% ratio
         ]
         emoji, label = commander.score_channel_health(channels)
-        assert "\u26a0" in emoji
+        assert "\U0001f7e1" in emoji
         assert "rebalancing" in label
+        assert "95%" in label
+
+    def test_rebalancing_shows_count_and_pcts(self, commander):
+        channels = [
+            {"active": True, "capacity": "1000000", "local_balance": "50000"},   # 5%
+            {"active": True, "capacity": "1000000", "local_balance": "500000"},  # 50% OK
+            {"active": True, "capacity": "1000000", "local_balance": "950000"},  # 95%
+        ]
+        emoji, label = commander.score_channel_health(channels)
+        assert "\U0001f7e1" in emoji
+        assert "2/3" in label
+        assert "5%" in label
+        assert "95%" in label
 
 
 class TestCmdUptime:
@@ -194,11 +255,16 @@ class TestCmdBlocked:
 class TestCmdStatus:
     def test_fetches_wazuh_and_system_info(self, commander):
         commander._mock_getoutput.side_effect = [
-            "up 2 days",                    # uptime
-            "45% used (20G/50G)",           # disk
-            "4.1Gi/15Gi",                   # mem
-            "0.5 0.3 0.2",                  # load
-            "3",                             # banned count
+            "0.5 0.3 0.2",                  # load_str (cat /proc/loadavg)
+            "2",                             # nproc
+            "45",                            # mem_pct_str
+            "45",                            # disk_pct_str
+            "55000",                         # thermal_zone temp (55°C)
+            "",                              # sensors fallback (not reached)
+            "up 2 days",                     # uptime -p
+            "4.1Gi/15Gi",                    # free -h (mem)
+            "45% used (20G/50G)",            # df -h (disk)
+            "3",                             # iptables banned count
             "",                              # ban history grep
         ]
         # Mock Wazuh API auth + agents call

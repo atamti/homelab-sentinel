@@ -20,6 +20,7 @@ Deployment:
 
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.environ.get(
@@ -43,13 +44,34 @@ def send_telegram(chat_id: str, message: str) -> None:
         sys.stderr.write(f"send failed: {err}\n")
 
 
+def _parse_port_change(full_log: str) -> tuple[str, str]:
+    """Extract port number and direction (opened/closed) from rule 533 full_log.
+
+    Returns (port, direction) where direction is 'opened' or 'closed'.
+    Falls back to ('unknown', 'changed') if parsing fails.
+    """
+    # Look for port number in common syscollector / netstat patterns
+    port_match = re.search(r'\b(\d{1,5})(?:/(?:tcp|udp))?\b', full_log)
+    port = port_match.group(1) if port_match else "unknown"
+
+    lower = full_log.lower()
+    if "new" in lower or "open" in lower or "listening" in lower:
+        direction = "opened"
+    elif "closed" in lower or "inactive" in lower or "removed" in lower:
+        direction = "closed"
+    else:
+        direction = "changed"
+
+    return port, direction
+
+
 def format_alert(alert: dict) -> tuple[str, int, str]:
     rule        = alert.get("rule", {})
     agent       = alert.get("agent", {})
     level       = rule.get("level", 0)
     description = rule.get("description", "N/A")
     rule_id     = rule.get("id", "N/A")
-    agent_name  = agent.get("name", "N/A")
+    agent_id    = agent.get("id", "?")
     timestamp   = alert.get("timestamp", "N/A")
     src_ip      = alert.get("data", {}).get("srcip", "")
     alert_id    = alert.get("id", "N/A")
@@ -59,6 +81,13 @@ def format_alert(alert: dict) -> tuple[str, int, str]:
     msg += f"<b>Time:</b> {timestamp[:19]}\n"
     if src_ip:
         msg += f"<b>Source IP:</b> {src_ip}\n"
+
+    # Enrich port change alerts with agent, port, and direction
+    if rule_id == "100200":
+        full_log = alert.get("full_log", "")
+        port, direction = _parse_port_change(full_log)
+        msg += f"<b>Agent:</b> {agent_id} | <b>Port:</b> {port} | <b>Status:</b> {direction}\n"
+
     msg += f"<b>Ref:</b> <code>{alert_id}</code>\n"  # <code> tag = tappable on mobile
 
     return msg, level, rule_id

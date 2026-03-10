@@ -141,26 +141,32 @@ def score_channel_health(channels: list) -> tuple[str, str]:
     """Evaluate LND channel list and return (emoji, label).
 
     - Any inactive channels → 🔴 + count
-    - Any channel with local ratio < min or > max → ⚠️ needs rebalancing
-    - All active, ratios in range → ✅ healthy
+    - Any channel with local ratio < min or > max → 🟡 + count/percentages
+    - All active, ratios in range → 🟢 healthy
     """
     cfg = _bitcoin_config().get("channel_health", {})
     min_ratio = cfg.get("min_local_ratio", 0.15)
     max_ratio = cfg.get("max_local_ratio", 0.85)
+    total = len(channels)
 
     inactive = sum(1 for c in channels if not c.get("active"))
     if inactive:
-        return "\U0001f534", f"{inactive} channel{'s' if inactive != 1 else ''} offline"
+        return "\U0001f534", f"{inactive}/{total} channel{'s' if inactive != 1 else ''} offline"
 
+    imbalanced = []
     for c in channels:
         capacity = int(c.get("capacity", 1))
         local = int(c.get("local_balance", 0))
         if capacity > 0:
             ratio = local / capacity
             if ratio < min_ratio or ratio > max_ratio:
-                return "\u26a0\ufe0f", "needs rebalancing"
+                imbalanced.append(round(ratio * 100))
 
-    return "\u2705", "healthy"
+    if imbalanced:
+        pcts = ", ".join(f"{p}%" for p in imbalanced)
+        return "\U0001f7e1", f"{len(imbalanced)}/{total} need rebalancing ({pcts})"
+
+    return "\U0001f7e2", f"{total} channel{'s' if total != 1 else ''} healthy"
 
 
 def lnd_get(endpoint: str) -> dict:
@@ -184,6 +190,8 @@ def mempool_get(endpoint: str, public: bool = False) -> dict | str:
         # Skip SSL verification for local mempool (self-signed cert)
         r    = requests.get(f"{base}{endpoint}", timeout=10,
                             verify=public)
+        if not r.ok:
+            return "error"
         try:
             return r.json()
         except Exception:
@@ -193,7 +201,7 @@ def mempool_get(endpoint: str, public: bool = False) -> dict | str:
                 return text
             return "error"
     except Exception:
-        return {}
+        return "error"
 
 
 def get_uptime_kuma_status() -> tuple[list, list]:
@@ -258,11 +266,59 @@ def format_table_row(rule_id, level, count, desc) -> str:
 
 def get_system_stats() -> dict:
     """Gather local system metrics."""
+    load_str = subprocess.getoutput("cat /proc/loadavg | awk '{print $1, $2, $3}'")
+    try:
+        load_1m = float(load_str.split()[0])
+    except (ValueError, IndexError):
+        load_1m = 0.0
+    try:
+        nproc = int(subprocess.getoutput("nproc"))
+    except ValueError:
+        nproc = 1
+    mem_pct_str = subprocess.getoutput(
+        "free | grep Mem | awk '{printf \"%.0f\", $3/$2 * 100}'"
+    )
+    try:
+        mem_pct = float(mem_pct_str)
+    except ValueError:
+        mem_pct = 0.0
+    disk_pct_str = subprocess.getoutput(
+        "df / | tail -1 | awk '{print $5}'"
+    ).rstrip('%')
+    try:
+        disk_pct = float(disk_pct_str)
+    except ValueError:
+        disk_pct = 0.0
+    # CPU temperature — try thermal zones then lm-sensors
+    cpu_temp = None
+    try:
+        temp_str = subprocess.getoutput(
+            "cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null "
+            "| sort -rn | head -1"
+        ).strip()
+        if temp_str.isdigit():
+            cpu_temp = int(temp_str) / 1000.0
+    except Exception:
+        pass
+    if cpu_temp is None:
+        try:
+            raw = subprocess.getoutput(
+                "sensors 2>/dev/null | grep -oP '\\+\\K[0-9.]+(?=°C)' | sort -rn | head -1"
+            ).strip()
+            if raw:
+                cpu_temp = float(raw)
+        except Exception:
+            pass
     return {
         "uptime": subprocess.getoutput("uptime -p"),
-        "load":   subprocess.getoutput("cat /proc/loadavg | awk '{print $1, $2, $3}'"),
+        "load":   load_str,
+        "load_1m": load_1m,
+        "nproc":  nproc,
         "mem":    subprocess.getoutput("free -h | grep Mem | awk '{print $3 \"/\" $2}'"),
+        "mem_pct": mem_pct,
         "disk":   subprocess.getoutput("df -h / | tail -1 | awk '{print $5, \"used (\" $3 \"/\" $2 \")\"}'"),
+        "disk_pct": disk_pct,
+        "cpu_temp": cpu_temp,
         "banned": subprocess.getoutput("iptables -L INPUT -n | grep -c DROP").strip(),
     }
 
@@ -609,6 +665,34 @@ def cmd_services(chat_id: str) -> None:
 # Daily Digest
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+def _rag(value: float, amber: float, red: float) -> str:
+    """Return 🟢/🟡/🔴 based on value vs thresholds."""
+    if value >= red:
+        return "\U0001f534"
+    if value >= amber:
+        return "\U0001f7e1"
+    return "\U0001f7e2"
+
+
+def _simplify_service_name(name: str) -> str:
+    """Strip common Uptime Kuma prefixes and URL parts for cleaner display."""
+    for prefix in ("HTTP - ", "HTTPS - ", "TCP Port - ", "Ping - ",
+                   "Docker Container - ", "DNS - "):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    name = re.sub(r'^https?://', '', name)
+    name = re.sub(r':\d+(/.*)?$', '', name)
+    name = re.sub(r'\.(local|lan|home|internal)$', '', name, flags=re.IGNORECASE)
+    return name
+
+
+def _valid_height(h) -> bool:
+    """Check if a mempool height response is a usable number."""
+    return isinstance(h, (int, float)) or (isinstance(h, str) and h.isdigit())
+
+
 def cmd_digest(chat_id: str) -> None:
     log("digest: starting")
     lines = ["<b>\u2600\ufe0f Daily Digest</b>\n"]
@@ -617,26 +701,45 @@ def cmd_digest(chat_id: str) -> None:
     # ── System ───────────────────────────────────────────────────────
     if cfg["digest"]["sections"]["system"]:
         stats = get_system_stats()
+        th = cfg["digest"]["thresholds"]
+
+        load_amber = th["load_per_core_amber"] * stats["nproc"]
+        load_red = th["load_per_core_red"] * stats["nproc"]
+        load_rag = _rag(stats["load_1m"], load_amber, load_red)
+        mem_rag = _rag(stats["mem_pct"], th["memory_amber"], th["memory_red"])
+        disk_rag = _rag(stats["disk_pct"], th["disk_amber"], th["disk_red"])
 
         lines.append("<b>\U0001f5a5 System</b>")
         lines.append(f"Uptime: {esc(stats['uptime'])}")
-        lines.append(f"Load (1m/5m/15m): {esc(stats['load'])}")
-        lines.append(f"Memory: {esc(stats['mem'])}")
-        lines.append(f"Disk: {esc(stats['disk'])}\n")
+        lines.append(f"{load_rag} Load: {esc(stats['load'])}")
+        lines.append(f"{mem_rag} Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
+        if stats["cpu_temp"] is not None:
+            temp_rag = _rag(stats["cpu_temp"], th["cpu_temp_amber"], th["cpu_temp_red"])
+            lines.append(f"{temp_rag} CPU temp: {stats['cpu_temp']:.0f}°C")
+        lines.append(f"{disk_rag} Disk: {esc(stats['disk'])}\n")
 
     # ── Agents ───────────────────────────────────────────────────────
     if cfg["digest"]["sections"]["agents"]:
         token      = get_wazuh_token()
         agent_data = {}
+        disconnected_ids = []
         if token:
             agents     = wazuh_get("/agents/summary/status", token)
             agent_data = agents.get("data", {}).get("connection", {})
+            if agent_data.get("disconnected", 0):
+                disc_resp = wazuh_get("/agents?status=disconnected", token)
+                disconnected_ids = [
+                    a.get("id", "?")
+                    for a in disc_resp.get("data", {}).get("affected_items", [])
+                ]
 
         active_agents = agent_data.get("active", "?")
         disconnected  = agent_data.get("disconnected", 0)
-        agent_line    = f"Agents: {active_agents} active"
         if disconnected:
-            agent_line += f", \u26a0\ufe0f {disconnected} disconnected"
+            ids = ", ".join(disconnected_ids) if disconnected_ids else str(disconnected)
+            agent_line = f"\U0001f7e1 Agents: {active_agents} active, {disconnected} disconnected (ID{'s' if disconnected != 1 else ''}: {ids})"
+        else:
+            agent_line = f"\U0001f7e2 Agents: {active_agents} active"
         lines.append(agent_line + "\n")
 
     # ── Security ─────────────────────────────────────────────────────
@@ -651,15 +754,19 @@ def cmd_digest(chat_id: str) -> None:
         if not cfg["digest"]["sections"]["agents"]:
             token = get_wazuh_token()
         if rule_counts and token:
-            top_rids   = [rid for rid, _ in sorted(rule_counts.items(), key=lambda x: -x[1])[:5]]
-            rules_meta = lookup_rules(top_rids, token)
-            for rid in top_rids:
+            all_rids   = list(rule_counts.keys())
+            rules_meta = lookup_rules(all_rids, token)
+            sorted_rids = sorted(
+                all_rids,
+                key=lambda rid: -(rules_meta.get(rid, {}).get("level", 0))
+            )[:5]
+            for rid in sorted_rids:
                 count = rule_counts[rid]
                 meta  = rules_meta.get(rid, {})
                 level = meta.get("level", "?")
                 desc  = meta.get("description", "Unknown")
-                if len(str(desc)) > 35:
-                    desc = str(desc)[:32].rsplit(' ', 1)[0] + '...'
+                if len(str(desc)) > 20:
+                    desc = str(desc)[:17].rsplit(' ', 1)[0] + '...'
                 lines.append(f"  <b>{esc(str(rid))}</b> (L{level}) \u00d7{count} \u2014 {esc(desc)}")
 
         # Level 10+ by level descending
@@ -683,8 +790,8 @@ def cmd_digest(chat_id: str) -> None:
                 count  = b.get("doc_count", 0)
                 rule_b = b.get("by_rule", {}).get("buckets", [])
                 desc   = rule_b[0].get("key", "Unknown") if rule_b else "Unknown"
-                if len(desc) > 35:
-                    desc = desc[:32].rsplit(' ', 1)[0] + '...'
+                if len(desc) > 20:
+                    desc = desc[:17].rsplit(' ', 1)[0] + '...'
                 lines.append(f"  L{level} \u00d7{count} \u2014 {esc(desc)}")
         else:
             lines.append("  No Level 10+ alerts \u2705")
@@ -696,7 +803,8 @@ def cmd_digest(chat_id: str) -> None:
         up_list, down_list = get_uptime_kuma_status()
         lines.append("<b>\U0001f4e1 Services</b>")
         if down_list:
-            lines.append(f"\U0001f534 Down: {', '.join(esc(n) for n in down_list)}")
+            names = ', '.join(esc(_simplify_service_name(n)) for n in down_list)
+            lines.append(f"\U0001f534 Down: {names}")
         else:
             lines.append(f"\U0001f7e2 All {len(up_list)} services up")
         lines.append("")
@@ -709,14 +817,21 @@ def cmd_digest(chat_id: str) -> None:
         public_height = mempool_get("/api/blocks/tip/height", public=True)
 
         lag_threshold = cfg["digest"]["bitcoin_lag_warning_blocks"]
-        try:
+        local_ok  = _valid_height(local_height)
+        public_ok = _valid_height(public_height)
+
+        if local_ok and public_ok:
             lag = int(public_height) - int(local_height)
             if lag > lag_threshold:
-                lines.append(f"\u26a0\ufe0f Node lagging {lag} blocks ({local_height} vs {public_height})")
+                lines.append(f"\U0001f7e1 Block height: {local_height} (lagging {lag} blocks)")
             else:
-                lines.append(f"Block height: {local_height} \u2705")
-        except Exception:
-            lines.append(f"Block height: local={esc(str(local_height))} public={esc(str(public_height))}")
+                lines.append(f"\U0001f7e2 Block height: {local_height}")
+        elif public_ok:
+            lines.append(f"\U0001f7e1 Block height: {public_height} (local node unreachable)")
+        elif local_ok:
+            lines.append(f"\U0001f7e1 Block height: {local_height} (public API unreachable)")
+        else:
+            lines.append("\U0001f534 Block height: unavailable")
 
         fees = mempool_get("/api/v1/fees/recommended")
         if isinstance(fees, dict):
@@ -729,10 +844,10 @@ def cmd_digest(chat_id: str) -> None:
         if cfg["integrations"]["lnd"]["enabled"]:
             lnd_info = lnd_get("/v1/getinfo")
             if lnd_info:
-                synced = "\u2705" if lnd_info.get("synced_to_chain") else "\u26a0\ufe0f not synced"
+                synced = "\U0001f7e2" if lnd_info.get("synced_to_chain") else "\U0001f7e1 not synced"
                 lines.append(f"LND: {synced}")
             else:
-                lines.append("LND: \u26a0\ufe0f unreachable")
+                lines.append("LND: \U0001f534 unreachable")
 
             channels = lnd_get("/v1/channels")
             if channels:
