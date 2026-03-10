@@ -94,7 +94,7 @@ def scrub_hostnames(text: str) -> tuple[str, int]:
     """Replace internal hostnames with generic labels.
     Returns (scrubbed_text, replacement_count)."""
     cfg = _san_config()
-    hostnames = cfg.get("internal_hostnames", [])
+    hostnames = cfg.get("internal_hostnames") or []
     count = 0
     for hostname in hostnames:
         if not hostname:
@@ -142,7 +142,7 @@ def scrub_custom(text: str) -> tuple[str, int]:
     """Apply custom replacement rules from config.
     Returns (scrubbed_text, replacement_count)."""
     cfg = _san_config()
-    replacements = cfg.get("custom_replacements", {})
+    replacements = cfg.get("custom_replacements") or {}
     count = 0
     for find, replace in replacements.items():
         if not find:
