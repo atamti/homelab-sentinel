@@ -21,8 +21,8 @@ class TestSendTelegram:
         assert call_args[1]["json"]["chat_id"] == "-100111"
         assert call_args[1]["json"]["text"] == "hello"
 
-    def test_noop_when_token_missing(self, notify_ban):
-        notify_ban.BOT_TOKEN = ""
+    def test_noop_when_token_missing(self, notify_ban, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
         notify_ban.send_telegram("-100111", "hello")
         notify_ban._mock_post.assert_not_called()
 
@@ -129,8 +129,7 @@ class TestMainAdd:
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
             mock_stdin.read.return_value = payload
-            with pytest.raises(SystemExit):
-                notify_ban.main()
+            notify_ban.main()
 
         # Duplicate -> no Telegram calls
         notify_ban._mock_post.assert_not_called()
@@ -167,6 +166,39 @@ class TestMainEdgeCases:
             mock_stdin.read.return_value = payload
             with pytest.raises(SystemExit):
                 notify_ban.main()
+
+    def test_firewall_ban_runs_even_when_notify_crashes(self, notify_ban):
+        """The core robustness guarantee: firewall-drop fires before notification."""
+        payload = make_ar_input(action="add", srcip="3.3.3.3", rule_id="5710")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "run_firewall_drop") as mock_fw,
+            patch.object(notify_ban, "_notify", side_effect=Exception("sentinel broken")),
+            patch.object(notify_ban, "is_already_banned", return_value=False),
+        ):
+            mock_stdin.read.return_value = payload
+            # Should NOT raise — the exception in _notify is caught
+            notify_ban.main()
+
+        # Firewall drop MUST have been called despite notification failure
+        mock_fw.assert_called_once()
+
+    def test_error_log_written_when_notify_crashes(self, notify_ban, tmp_path):
+        """Notification failures are logged to ar-errors.log."""
+        payload = make_ar_input(action="add", srcip="4.4.4.4", rule_id="5710")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "run_firewall_drop"),
+            patch.object(notify_ban, "_notify", side_effect=RuntimeError("yaml broken")),
+            patch.object(notify_ban, "is_already_banned", return_value=False),
+        ):
+            mock_stdin.read.return_value = payload
+            notify_ban.main()
+
+        with open(notify_ban.AR_ERROR_LOG) as f:
+            content = f.read()
+        assert "yaml broken" in content
+        assert "4.4.4.4" in content
 
 
 # ── iptables dedup ───────────────────────────────────────────────────────────────

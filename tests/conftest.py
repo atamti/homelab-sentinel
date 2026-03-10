@@ -103,6 +103,7 @@ def notify_ban(monkeypatch, tmp_path):
         test_cfg = _deep_merge(_DEFAULTS, {"active_response": {"ban_log": str(ban_log)}})
         monkeypatch.setattr("sentinel.config.cfg", test_cfg)
         mod.DEBUG_LOG = str(tmp_path / "debug.log")
+        mod.AR_ERROR_LOG = str(tmp_path / "ar-errors.log")
         mod._mock_post = mock_post
         mod._ban_log = str(ban_log)
         yield mod

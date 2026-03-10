@@ -6,6 +6,12 @@ Deployed as a Wazuh active response binary. Handles the two-phase
 firewall-drop handshake, bans the offending IP via iptables, sends
 a Telegram notification, and writes to the ban history log.
 
+DESIGN PRINCIPLE: The firewall ban MUST succeed even if everything else
+(Telegram, config loading, logging) is broken.  run_firewall_drop()
+executes first with only the raw stdin JSON.  All notification and
+logging is best-effort and wrapped in try/except so it can never
+prevent the security action.
+
 Deployment:
   sudo cp notify-ban.py /var/ossec/active-response/bin/notify-ban.py
   sudo chmod 750 /var/ossec/active-response/bin/notify-ban.py
@@ -22,25 +28,27 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.environ.get("SENTINEL_LIB", os.path.dirname(os.path.abspath(__file__))))
+AR_ERROR_LOG = "/var/ossec/logs/ar-errors.log"
+DEBUG_LOG = None  # set to "/tmp/ar_debug.log" to enable verbose trace
 
-from sentinel import telegram
-from sentinel.config import env, get_cfg, load_env_file
-from sentinel.validate import validated_ip
-
-# ── Load config from environment ────────────────────────────────────────────
-# Active response scripts are spawned by Wazuh directly (not via systemd),
-# so the EnvironmentFile isn't inherited.  Load it explicitly.
-load_env_file()
-
-BOT_TOKEN = env("TELEGRAM_BOT_TOKEN")
-FULL_LOG_CHAT_ID = env("TELEGRAM_FULL_LOG_CHAT_ID")
-CRITICAL_CHAT_ID = env("TELEGRAM_CRITICAL_CHAT_ID")
-
-DEBUG_LOG = None  # set to "/tmp/ar_debug.log" to enable
+# sentinel/ lives under /var/ossec/integrations/ when deployed, but this
+# script lives under /var/ossec/active-response/bin/.  Set the path once
+# so all late imports find the library.
+_SENTINEL_LIB = os.environ.get("SENTINEL_LIB", "/var/ossec/integrations")
+if _SENTINEL_LIB not in sys.path:
+    sys.path.insert(0, _SENTINEL_LIB)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _log_error(msg: str) -> None:
+    """Append to the persistent AR error log.  Never raises."""
+    try:
+        with open(AR_ERROR_LOG, "a") as f:
+            f.write(f"{time.strftime('%Y/%m/%d %H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
 
 
 def debug_log(msg: str) -> None:
@@ -50,17 +58,37 @@ def debug_log(msg: str) -> None:
 
 
 def send_telegram(chat_id: str, message: str) -> None:
-    err = telegram.send(BOT_TOKEN, chat_id, message)
-    if err:
-        debug_log(f"send failed: {err}")
+    """Best-effort Telegram send.  Never raises."""
+    try:
+        # Late imports — sentinel library may be broken; that must never
+        # prevent the firewall ban that already ran before this point.
+        from sentinel import telegram
+        from sentinel.config import env, load_env_file
+
+        load_env_file()
+        token = env("TELEGRAM_BOT_TOKEN")
+        err = telegram.send(token, chat_id, message)
+        if err:
+            _log_error(f"Telegram send failed (chat {chat_id}): {err}")
+            debug_log(f"send failed: {err}")
+    except Exception as exc:
+        _log_error(f"Telegram send error (chat {chat_id}): {exc}")
+        debug_log(f"send exception: {exc}")
 
 
 def write_ban_log(ip: str, rule_id: str) -> None:
-    ban_log = get_cfg()["active_response"]["ban_log"]
+    """Best-effort ban log write.  Never raises."""
+    try:
+        from sentinel.config import get_cfg
+
+        ban_log = get_cfg()["active_response"]["ban_log"]
+    except Exception:
+        ban_log = "/var/ossec/logs/ban-history.log"
     try:
         with open(ban_log, "a") as f:
             f.write(f"{time.strftime('%Y/%m/%d %H:%M:%S')} Banned {ip} (Rule {rule_id})\n")
     except Exception as e:
+        _log_error(f"Ban log write error ({ban_log}): {e}")
         debug_log(f"Ban log write error: {e}")
 
 
@@ -139,8 +167,8 @@ def deduplicate_iptables() -> int:
 
 
 def run_firewall_drop(alert_json: str) -> None:
-    """
-    Execute firewall-drop via two-phase stdin/stdout handshake.
+    """Execute firewall-drop via two-phase stdin/stdout handshake.
+
     Phase 1: send alert JSON to firewall-drop
     Phase 2: receive check_keys request, respond 'continue'
     """
@@ -164,29 +192,88 @@ def run_firewall_drop(alert_json: str) -> None:
         if stderr:
             debug_log(f"firewall-drop stderr: {stderr.decode().strip()}")
     except Exception as e:
+        _log_error(f"firewall-drop execution failed: {e}")
         debug_log(f"firewall-drop error: {e}")
+
+
+def _extract_ip(data: dict) -> str:
+    """Pull srcip from the alert JSON, or return empty string."""
+    return data.get("parameters", {}).get("alert", {}).get("data", {}).get("srcip", "")
+
+
+def _validate_ip(ip: str) -> str | None:
+    """Validate and return normalized IP, or None on failure."""
+    try:
+        from sentinel.validate import validated_ip
+
+        return validated_ip(ip)
+    except Exception:
+        # Fallback: basic sanity check (IPv4 dotted quad)
+        parts = ip.split(".")
+        if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            return ip
+        return None
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
+    # ── Phase 1: Read stdin (fatal if this fails — nothing to do) ────
     try:
         raw = sys.stdin.read()
         debug_log(f"stdin: {raw[:500]}")
         data = json.loads(raw)
     except Exception as e:
+        _log_error(f"JSON parse error: {e}")
         debug_log(f"JSON parse error: {e}")
         sys.exit(1)
 
     action = data.get("command", "")
+    ip = _extract_ip(data)
+
+    if not ip:
+        debug_log("No srcip found, exiting")
+        sys.exit(0)
+
+    ip = _validate_ip(ip)
+    if not ip:
+        debug_log("Invalid IP from alert, exiting")
+        sys.exit(1)
+
+    # ── Phase 2: FIREWALL BAN — runs before any config/notification ──
+    # This block uses ONLY stdlib.  No sentinel imports, no env loading,
+    # no YAML config, no Telegram.  If it fails, it's a real OS-level
+    # problem (missing firewall-drop binary, iptables broken).
+    if not is_already_banned(ip):
+        run_firewall_drop(raw)
+    else:
+        debug_log(f"{ip} already in iptables, skipping firewall-drop")
+
+    # ── Phase 3: Notification & logging (best-effort) ────────────────
+    # Everything below is wrapped so failures can never retroactively
+    # undo the firewall action above.
+    try:
+        _notify(action, ip, data)
+    except Exception as exc:
+        _log_error(f"Notification phase failed for {ip}: {exc}")
+        debug_log(f"Notification phase error: {exc}")
+
+
+def _notify(action: str, ip: str, data: dict) -> None:
+    """Handle logging and Telegram notifications.  Called after the ban."""
+    from sentinel.config import env, get_cfg, load_env_file
+
+    load_env_file()
+
+    full_log_chat = env("TELEGRAM_FULL_LOG_CHAT_ID")
+    critical_chat = env("TELEGRAM_CRITICAL_CHAT_ID")
+
     alert = data.get("parameters", {}).get("alert", {})
     rule = alert.get("rule", {})
     agent = alert.get("agent", {})
     geo = alert.get("GeoLocation", {})
-    src_data = alert.get("data", {})
 
-    ip = src_data.get("srcip", "")
     rule_id = str(rule.get("id", ""))
     rule_desc = rule.get("description", "Unknown rule")
     agent_name = agent.get("name", "unknown")
@@ -194,37 +281,19 @@ def main() -> None:
     country = geo.get("country_name", "")
     country_str = f" [{country}]" if country else ""
 
-    if not ip:
-        debug_log("No srcip found, exiting")
-        sys.exit(0)
-
-    # Validate IP before any iptables interaction (fail open on bad input)
-    try:
-        ip = validated_ip(ip)
-    except ValueError:
-        debug_log(f"Invalid IP from alert: {ip}")
-        sys.exit(1)
-
     ar_cfg = get_cfg()["active_response"]
     silent_rules = set(str(r) for r in get_cfg()["alerts"]["silent_rules"])
     extra_whitelist = ar_cfg.get("extra_whitelist", [])
 
-    # Skip whitelisted IPs
     if ip in extra_whitelist:
-        debug_log(f"Whitelisted IP {ip}, skipping")
-        sys.exit(0)
-
-    # ── Firewall drop (skip if IP already has a DROP rule) ───────────
-    if not is_already_banned(ip):
-        run_firewall_drop(raw)
-    else:
-        debug_log(f"{ip} already in iptables, skipping firewall-drop")
+        debug_log(f"Whitelisted IP {ip}, skipping notifications")
+        return
 
     # ── Handle add (new ban) ─────────────────────────────────────────
     if action == "add":
         if is_duplicate(ip):
             debug_log(f"Duplicate suppressed for {ip}")
-            sys.exit(0)
+            return
 
         write_ban_log(ip, rule_id)
 
@@ -235,10 +304,10 @@ def main() -> None:
             f"<b>Agent:</b> {agent_name}"
         )
 
-        send_telegram(FULL_LOG_CHAT_ID, message)
+        send_telegram(full_log_chat, message)
 
         if rule_id not in silent_rules:
-            send_telegram(CRITICAL_CHAT_ID, f"🚨 {message}")
+            send_telegram(critical_chat, f"🚨 {message}")
 
     # ── Handle delete (ban expiry) ───────────────────────────────────
     elif action == "delete":
@@ -249,7 +318,7 @@ def main() -> None:
                 f"<b>Rule:</b> {rule_id}\n"
                 f"<b>Agent:</b> {agent_name}"
             )
-            send_telegram(FULL_LOG_CHAT_ID, message)
+            send_telegram(full_log_chat, message)
 
     else:
         debug_log(f"Unknown action: {action}")

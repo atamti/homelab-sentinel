@@ -84,7 +84,7 @@ digest:
 integrations:
   bitcoin:
     enabled: true
-    mempool_local: "http://minibolt.local:4081"
+    mempool_local: "https://minibolt.local:4081"
     mempool_public_fallback: true
   lnd:
     enabled: true
