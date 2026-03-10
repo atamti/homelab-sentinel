@@ -99,6 +99,43 @@ class TestProcessUpdate:
 
 # ── Read-only commands ───────────────────────────────────────────────────────
 
+
+class TestScoreChannelHealth:
+    def test_all_active_balanced(self, commander):
+        channels = [
+            {"active": True, "capacity": "1000000", "local_balance": "500000"},
+            {"active": True, "capacity": "2000000", "local_balance": "600000"},
+        ]
+        emoji, label = commander.score_channel_health(channels)
+        assert emoji == "\u2705"
+        assert label == "healthy"
+
+    def test_inactive_channel(self, commander):
+        channels = [
+            {"active": True, "capacity": "1000000", "local_balance": "500000"},
+            {"active": False, "capacity": "1000000", "local_balance": "500000"},
+        ]
+        emoji, label = commander.score_channel_health(channels)
+        assert "\U0001f534" in emoji
+        assert "offline" in label
+
+    def test_needs_rebalancing_low(self, commander):
+        channels = [
+            {"active": True, "capacity": "1000000", "local_balance": "50000"},  # 5% ratio
+        ]
+        emoji, label = commander.score_channel_health(channels)
+        assert "\u26a0" in emoji
+        assert "rebalancing" in label
+
+    def test_needs_rebalancing_high(self, commander):
+        channels = [
+            {"active": True, "capacity": "1000000", "local_balance": "950000"},  # 95% ratio
+        ]
+        emoji, label = commander.score_channel_health(channels)
+        assert "\u26a0" in emoji
+        assert "rebalancing" in label
+
+
 class TestCmdUptime:
     def test_sends_uptime_output(self, commander):
         commander._mock_getoutput.return_value = "up 5 days, 3:22"
@@ -173,7 +210,7 @@ class TestCmdAlerts:
                     "id": "abc123",
                     "timestamp": "2026-03-09T10:00:00",
                     "rule": {"id": "5710", "level": 10, "description": "SSH brute force"},
-                    "agent": {"name": "server1"},
+                    "agent": {"id": "001", "name": "server1"},
                 }
             }]}
         }
@@ -182,11 +219,21 @@ class TestCmdAlerts:
         sent = [c for c in commander._mock_post.call_args_list
                 if "sendMessage" in str(c)]
         assert len(sent) >= 1
+        text = sent[0][1]["json"]["text"]
+        assert "Agent 001" in text
+        assert "Rule 5710" in text
+        assert "server1" not in text  # agent name stripped
 
 
 class TestCmdEvent:
+    def test_missing_totp_shows_error(self, commander):
+        commander.cmd_event("123", "some-alert-id")
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "TOTP required" in text
+
     def test_missing_arg_shows_usage(self, commander):
-        commander.cmd_event("123", "")
+        code = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
+        commander.cmd_event("123", f" {code}")
         text = commander._mock_post.call_args[1]["json"]["text"]
         assert "Usage" in text
 
@@ -194,9 +241,39 @@ class TestCmdEvent:
         search_resp = MagicMock()
         search_resp.json.return_value = {"hits": {"hits": []}}
         commander._mock_post.return_value = search_resp
-        commander.cmd_event("123", "nonexistent")
-        text = commander._mock_post.call_args[1]["json"]["text"]
-        assert "No alert found" in text
+        code = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
+        commander.cmd_event("123", f"nonexistent {code}")
+        sent = [c for c in commander._mock_post.call_args_list
+                if "sendMessage" in str(c)]
+        assert any("No alert found" in str(c) for c in sent)
+
+    def test_truncates_full_log(self, commander):
+        long_log = "A" * 300
+        search_resp = MagicMock()
+        search_resp.json.return_value = {
+            "hits": {"hits": [{
+                "_source": {
+                    "id": "abc123",
+                    "timestamp": "2026-03-09T10:00:00",
+                    "rule": {"id": "5710", "level": 10, "description": "test",
+                             "groups": ["sshd"]},
+                    "agent": {"id": "001", "name": "server1"},
+                    "data": {},
+                    "full_log": long_log,
+                }
+            }]}
+        }
+        commander._mock_post.return_value = search_resp
+        code = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
+        commander.cmd_event("123", f"abc123 {code}")
+        sent = [c for c in commander._mock_post.call_args_list
+                if "sendMessage" in str(c)]
+        text = sent[-1][1]["json"]["text"]
+        # full_log should be truncated to 150 + "..."
+        assert "A" * 150 in text
+        assert "A" * 151 not in text
+        assert "..." in text
+        assert "<b>Agent:</b> 001" in text  # uses agent ID, not name
 
 
 # ── Active response commands ─────────────────────────────────────────────────

@@ -22,9 +22,10 @@ class TestFormatAlert:
         assert "Level 10" in msg
         assert "5710" in msg
         assert "SSH brute force" in msg
-        assert "server1" in msg
+        assert "server1" not in msg  # agent name stripped
         assert "1.2.3.4" in msg
         assert "abc-123" in msg
+        assert "Ref:" in msg
         assert level == 10
         assert rule_id == "5710"
 

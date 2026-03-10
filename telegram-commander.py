@@ -119,6 +119,44 @@ def get_lnd_headers() -> dict:
     return {"Grpc-Metadata-macaroon": macaroon}
 
 
+def _alert_config() -> dict:
+    """Return the alert_output config section from sanitize module's config."""
+    from sentinel.sanitize import _load_config
+    return _load_config().get("alert_output", {})
+
+
+def _bitcoin_config() -> dict:
+    """Return the bitcoin config section."""
+    from sentinel.sanitize import _load_config
+    return _load_config().get("bitcoin", {})
+
+
+def score_channel_health(channels: list) -> tuple[str, str]:
+    """Evaluate LND channel list and return (emoji, label).
+
+    - Any inactive channels → 🔴 + count
+    - Any channel with local ratio < min or > max → ⚠️ needs rebalancing
+    - All active, ratios in range → ✅ healthy
+    """
+    cfg = _bitcoin_config().get("channel_health", {})
+    min_ratio = cfg.get("min_local_ratio", 0.15)
+    max_ratio = cfg.get("max_local_ratio", 0.85)
+
+    inactive = sum(1 for c in channels if not c.get("active"))
+    if inactive:
+        return "\U0001f534", f"{inactive} channel{'s' if inactive != 1 else ''} offline"
+
+    for c in channels:
+        capacity = int(c.get("capacity", 1))
+        local = int(c.get("local_balance", 0))
+        if capacity > 0:
+            ratio = local / capacity
+            if ratio < min_ratio or ratio > max_ratio:
+                return "\u26a0\ufe0f", "needs rebalancing"
+
+    return "\u2705", "healthy"
+
+
 def lnd_get(endpoint: str) -> dict:
     try:
         r = requests.get(
@@ -270,7 +308,7 @@ def cmd_help(chat_id: str) -> None:
     text  = "<b>Homelab Sentinel</b>\n\n"
     text += "<b>Read-Only:</b>\n"
     text += "/status - System overview + active response stats\n"
-    text += "/event [id] - Full detail on a specific alert\n"
+    text += "/event [id] [totp] - Full detail on a specific alert\n"
     text += "/agents - List all agents\n"
     text += "/alerts - Recent high-level alerts (Level 8+)\n"
     text += "/top - Top triggered rules (24h)\n"
@@ -315,8 +353,7 @@ def cmd_status(chat_id: str) -> None:
         for rid, count in sorted(rule_counts.items(), key=lambda x: -x[1]):
             meta  = rules_meta.get(rid, {})
             level = meta.get("level", "?")
-            desc  = meta.get("description", "Unknown")
-            rule_table += format_table_row(rid, level, count, desc)
+            rule_table += f"<b>{rid}</b> (L{level}) \u00d7{count}\n"
 
     text  = "<b>System Status</b>\n\n"
     text += f"<b>Uptime:</b> {stats['uptime']}\n"
@@ -330,9 +367,12 @@ def cmd_status(chat_id: str) -> None:
 
 
 def cmd_event(chat_id: str, arg: str) -> None:
-    alert_id = arg.strip()
+    alert_id, valid = require_totp(chat_id, arg)
+    if not valid:
+        return
+    alert_id = alert_id.strip()
     if not alert_id:
-        send_message(chat_id, "Usage: /event [alert_id]")
+        send_message(chat_id, "Usage: /event [alert_id] [totp]")
         return
 
     result = indexer_search({"query": {"term": {"id": alert_id}}})
@@ -353,7 +393,7 @@ def cmd_event(chat_id: str, arg: str) -> None:
     text += f"<b>ID:</b> {a.get('id')}\n"
     text += f"<b>Level:</b> {rule.get('level')}\n"
     text += f"<b>Rule:</b> {rule.get('id')} - {rule.get('description')}\n"
-    text += f"<b>Agent:</b> {agent.get('name')}\n"
+    text += f"<b>Agent:</b> {agent.get('id', '?')}\n"
     text += f"<b>Time:</b> {a.get('timestamp', '')[:19]}\n"
     text += f"<b>Groups:</b> {', '.join(rule.get('groups', []))}\n"
 
@@ -368,7 +408,7 @@ def cmd_event(chat_id: str, arg: str) -> None:
             text += f"  {esc(str(k))}: {esc(str(v))}\n"
 
     if full_log:
-        text += f"\n<b>Full Log:</b>\n<pre>{esc(full_log[:1000])}</pre>"
+        text += f"\n<b>Log:</b> <pre>{esc(full_log[:150])}...</pre>"
 
     send_message(chat_id, text)
 
@@ -413,9 +453,9 @@ def cmd_alerts(chat_id: str) -> None:
         a     = h.get("_source", {})
         rule  = a.get("rule", {})
         agent = a.get("agent", {})
-        text += f"<b>L{rule.get('level')}</b> | {agent.get('name')} | {rule.get('description')}\n"
-        text += f"  {a.get('timestamp', '')[:19]}\n"
-        text += f"  ID: <code>{a.get('id')}</code>\n\n"
+        agent_id = agent.get("id", "?")
+        text += f"L{rule.get('level')} | Agent {agent_id} | Rule {rule.get('id')} | {a.get('timestamp', '')[:19]}\n"
+        text += f"Ref: <code>{a.get('id')}</code>\n\n"
 
     send_message(chat_id, text)
 
@@ -601,19 +641,16 @@ def cmd_digest(chat_id: str) -> None:
     lnd_info = lnd_get("/v1/getinfo")
     if lnd_info:
         synced = "\u2705" if lnd_info.get("synced_to_chain") else "\u26a0\ufe0f not synced"
-        peers  = lnd_info.get("num_peers", "?")
-        lines.append(f"LND: {synced} | Peers: {peers}")
+        lines.append(f"LND: {synced}")
     else:
         lines.append("LND: \u26a0\ufe0f unreachable")
 
     channels = lnd_get("/v1/channels")
     if channels:
-        ch_list   = channels.get("channels", [])
-        active_ch = sum(1 for c in ch_list if c.get("active"))
-        inactive  = len(ch_list) - active_ch
-        local_bal = sum(int(c.get("local_balance", 0)) for c in ch_list)
-        ch_status = "\u2705" if inactive == 0 else f"\u26a0\ufe0f {inactive} inactive"
-        lines.append(f"Channels: {active_ch} active {ch_status} | Local: {local_bal:,} sats")
+        ch_list = channels.get("channels", [])
+        if ch_list:
+            emoji, label = score_channel_health(ch_list)
+            lines.append(f"Channels: {emoji} {label}")
 
     send_message(chat_id, "\n".join(lines))
     log("digest: sent")

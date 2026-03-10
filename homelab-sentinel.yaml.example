@@ -28,3 +28,18 @@ sanitization:
   # Arbitrary string replacements (case-insensitive)
   custom_replacements:
     # "dockerdaemon": "[service-user]"
+
+alert_output:
+  # Strip agent names from push notifications (agent ID still shown)
+  include_agent_names: false
+  # Omit full_log from push alerts (available via /event)
+  include_full_log: false
+  # When full_log is shown (e.g. /event), truncate to this length
+  full_log_max_chars: 150
+  # Require TOTP for /event command (pull command for investigation)
+  event_command_requires_totp: true
+
+bitcoin:
+  channel_health:
+    min_local_ratio: 0.15
+    max_local_ratio: 0.85

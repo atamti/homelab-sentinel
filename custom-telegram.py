@@ -51,11 +51,10 @@ def format_alert(alert: dict) -> tuple[str, int, str]:
 
     msg  = f"<b>Wazuh Alert (Level {level})</b>\n"
     msg += f"<b>Rule:</b> {rule_id} - {description}\n"
-    msg += f"<b>Agent:</b> {agent_name}\n"
-    msg += f"<b>Time:</b> {timestamp}\n"
+    msg += f"<b>Time:</b> {timestamp[:19]}\n"
     if src_ip:
         msg += f"<b>Source IP:</b> {src_ip}\n"
-    msg += f"<b>ID:</b> <code>{alert_id}</code>\n"  # <code> tag = tappable on mobile
+    msg += f"<b>Ref:</b> <code>{alert_id}</code>\n"  # <code> tag = tappable on mobile
 
     return msg, level, rule_id
 
