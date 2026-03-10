@@ -34,7 +34,7 @@ import pyotp
 import requests
 
 from sentinel import telegram, wazuh
-from sentinel.config import require_env, env
+from sentinel.config import require_env, env, VERSION
 from sentinel.telegram import esc
 from sentinel.validate import validated_ip, validated_port
 from sentinel.sanitize import sanitize, summarize_docker_output
@@ -331,7 +331,7 @@ def require_totp_only(chat_id: str, arg: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def cmd_help(chat_id: str) -> None:
-    text  = "<b>Homelab Sentinel</b>\n\n"
+    text  = f"<b>Homelab Sentinel</b> <i>v{VERSION}</i>\n\n"
     text += "<b>Read-Only:</b>\n"
     text += "/status - System overview + active response stats\n"
     text += "/event [id] [totp] - Full detail on a specific alert\n"

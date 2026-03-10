@@ -1,5 +1,7 @@
 # homelab-sentinel
 
+> **⚠️ Pre-release software (v0.x)** — APIs, config format, and commands may change between versions.
+
 A Telegram bot for real-time server monitoring and active response, built on top of Wazuh 4.x.
 
 Provides read-only status commands and TOTP-protected active response commands via Telegram, plus a daily digest covering system health, security events, services, and Bitcoin node status.

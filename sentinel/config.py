@@ -2,6 +2,8 @@
 
 import os
 
+VERSION = "0.1.0"
+
 # Rules that trigger bans but skip the critical notification channel
 SILENT_RULES = {"31151", "5710", "5711"}
 

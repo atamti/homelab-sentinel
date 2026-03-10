@@ -119,7 +119,8 @@ copy_dir() {
 
 # ── Pre-flight checks ───────────────────────────────────────────────────────
 
-info "homelab-sentinel deploy"
+VERSION=$(grep -oP 'VERSION = "\K[^"]+' "${SCRIPT_DIR}/sentinel/config.py" 2>/dev/null || echo "unknown")
+info "homelab-sentinel v${VERSION}"
 info "Target: ${TARGET:-localhost}"
 [[ "$DRY_RUN" == true ]] && warn "DRY RUN — no changes will be made"
 echo ""
