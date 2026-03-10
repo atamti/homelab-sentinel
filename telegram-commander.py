@@ -354,7 +354,8 @@ def cmd_status(chat_id: str) -> None:
     if rule_counts:
         rule_table = "\n<b>Active Response Events (24h)</b>\n\n"
         rules_meta = lookup_rules(list(rule_counts.keys()), token)
-        for rid, count in sorted(rule_counts.items(), key=lambda x: -x[1]):
+        for rid, count in sorted(rule_counts.items(),
+                                  key=lambda x: -(rules_meta.get(x[0], {}).get("level", 0))):
             meta  = rules_meta.get(rid, {})
             level = meta.get("level", "?")
             rule_table += f"<b>{rid}</b> (L{level}) \u00d7{count}\n"
