@@ -233,7 +233,7 @@ def get_system_stats() -> dict:
         "uptime": subprocess.getoutput("uptime -p"),
         "load":   subprocess.getoutput("cat /proc/loadavg | awk '{print $1, $2, $3}'"),
         "mem":    subprocess.getoutput("free -h | grep Mem | awk '{print $3 \"/\" $2}'"),
-        "disk":   subprocess.getoutput("df -h / | tail -1 | awk '{print $5 \" used (\" $3 \"/\" $2 \")}\"'"),
+        "disk":   subprocess.getoutput("df -h / | tail -1 | awk '{print $5, \"used (\" $3 \"/\" $2 \")\"}'"),
         "banned": subprocess.getoutput("iptables -L INPUT -n | grep -c DROP").strip(),
     }
 
