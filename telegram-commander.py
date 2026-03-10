@@ -47,7 +47,9 @@ from sentinel.sanitize import sanitize, summarize_docker_output
 BOT_TOKEN       = require_env("TELEGRAM_BOT_TOKEN")
 AUTHORIZED_USER = require_env("TELEGRAM_AUTHORIZED_USER")
 TOTP_SECRET     = require_env("TOTP_SECRET")
-DIGEST_CHAT_ID  = require_env("TELEGRAM_AUTHORIZED_USER")  # same as authorized user
+DIGEST_CHAT_ID   = require_env("TELEGRAM_AUTHORIZED_USER")  # same as authorized user
+FULL_LOG_CHAT_ID = env("TELEGRAM_FULL_LOG_CHAT_ID")
+CRITICAL_CHAT_ID = env("TELEGRAM_CRITICAL_CHAT_ID")
 
 WAZUH_API       = env("WAZUH_API_URL",  "https://127.0.0.1:55000")
 WAZUH_USER      = require_env("WAZUH_API_USER")
@@ -85,6 +87,15 @@ def send_message(chat_id: str, text: str) -> None:
     err = telegram.send(BOT_TOKEN, chat_id, sanitize(text))
     if err:
         log(f"send failed: {err}")
+
+
+def notify_all(text: str) -> None:
+    """Send a notification to commander, full-log, and critical channels."""
+    seen: set[str] = set()
+    for cid in (DIGEST_CHAT_ID, FULL_LOG_CHAT_ID, CRITICAL_CHAT_ID):
+        if cid and cid not in seen:
+            seen.add(cid)
+            send_message(cid, text)
 
 
 # ── Wazuh token cache ────────────────────────────────────────────────────────
@@ -939,6 +950,8 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT,  _shutdown)
 
+    notify_all(f"\U0001f7e2 <b>Homelab Sentinel v{VERSION} started</b>")
+
     digest_time = get_cfg()["digest"]["time"]
     digest_h, digest_m = (int(x) for x in digest_time.split(":"))
     digest_minutes = digest_h * 60 + digest_m
@@ -972,6 +985,7 @@ def main() -> None:
             log(f"main loop error: {traceback.format_exc()}")
             time.sleep(5)
 
+    notify_all(f"\U0001f534 <b>Homelab Sentinel v{VERSION} stopped</b>")
     log("commander: stopped")
 
 
