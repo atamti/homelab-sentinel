@@ -193,12 +193,26 @@ def get_uptime_kuma_status() -> tuple[list, list]:
         r        = requests.get(UPTIME_KUMA_URL, timeout=10)
         data     = r.json()
         monitors = data.get("publicGroupList", [])
-        up, down = [], []
+
+        # Build id→name map
+        id_name: dict[int, str] = {}
         for group in monitors:
             for monitor in group.get("monitorList", []):
-                name   = monitor.get("name", "?")
-                status = monitor.get("status", 0)
-                (up if status == 1 else down).append(name)
+                id_name[monitor.get("id")] = monitor.get("name", "?")
+
+        # Fetch heartbeat data for actual up/down status
+        heartbeat_url = UPTIME_KUMA_URL.replace("/api/status-page/",
+                                                 "/api/status-page/heartbeat/")
+        hb       = requests.get(heartbeat_url, timeout=10).json()
+        hb_list  = hb.get("heartbeatList", {})
+
+        up, down = [], []
+        for mid, name in id_name.items():
+            beats = hb_list.get(str(mid), [])
+            if beats and beats[-1].get("status") == 1:
+                up.append(name)
+            else:
+                down.append(name)
         return up, down
     except Exception:
         return [], []
