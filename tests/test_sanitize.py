@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from sentinel import sanitize
+from sentinel import config as _sentinel_config
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +28,8 @@ def _write_config(tmp_path, cfg: dict) -> str:
 def _patch_config(tmp_path, cfg: dict):
     """Return a patch context that makes sanitize load cfg from tmp_path."""
     path = _write_config(tmp_path, cfg)
-    return patch.object(sanitize, "_CONFIG_PATHS", [path])
+    sanitize.reload_config()
+    return patch.object(_sentinel_config, "_CONFIG_PATHS", [path])
 
 
 # ── scrub_hostnames ──────────────────────────────────────────────────────────
@@ -246,6 +248,7 @@ class TestSanitize:
 
     def test_no_config_file_returns_unchanged(self):
         # With no config file at all, sanitize is disabled by default
-        with patch.object(sanitize, "_CONFIG_PATHS", ["/nonexistent/path.yaml"]):
+        sanitize.reload_config()
+        with patch.object(_sentinel_config, "_CONFIG_PATHS", ["/nonexistent/path.yaml"]):
             result = sanitize.sanitize("masterserver 10.0.0.1")
         assert result == "masterserver 10.0.0.1"

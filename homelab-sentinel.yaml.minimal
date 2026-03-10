@@ -1,0 +1,20 @@
+# homelab-sentinel.yaml — minimal config (all defaults apply)
+#
+# Only uncomment/add settings you want to override.
+# See homelab-sentinel.yaml.example for the full reference.
+
+# alerts:
+#   silent_rules: ["31151", "5710", "5711"]
+
+# digest:
+#   time: "06:30"
+
+# integrations:
+#   bitcoin:
+#     mempool_local: "http://minibolt.local:4081"
+#   lnd:
+#     rest_url: "https://minibolt.local:8080"
+
+# sanitization:
+#   internal_hostnames:
+#     - "masterserver"

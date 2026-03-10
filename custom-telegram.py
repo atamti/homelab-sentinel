@@ -26,7 +26,7 @@ sys.path.insert(0, os.environ.get(
     "SENTINEL_LIB", os.path.dirname(os.path.abspath(__file__))))
 
 from sentinel import telegram
-from sentinel.config import env, load_env_file, SILENT_RULES
+from sentinel.config import env, load_env_file, get_cfg
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 # Wazuh spawns integrations directly (not via systemd), so load env explicitly.
@@ -71,11 +71,15 @@ def main() -> None:
 
     message, level, rule_id = format_alert(alert)
 
+    alerts_cfg = get_cfg()["alerts"]
+    critical_level = alerts_cfg["critical_level"]
+    silent_rules = set(str(r) for r in alerts_cfg["silent_rules"])
+
     # Always send to full log channel (muted, Level 7+)
     send_telegram(FULL_LOG_CHAT_ID, message)
 
-    # Send Level 10+ to critical channel, excluding high-volume rules
-    if level >= 10 and rule_id not in SILENT_RULES:
+    # Send critical+ to critical channel, excluding high-volume rules
+    if level >= critical_level and rule_id not in silent_rules:
         send_telegram(CRITICAL_CHAT_ID, "🚨 " + message)
 
 

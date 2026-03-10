@@ -2,12 +2,135 @@
 
 import os
 
+import yaml
+
 VERSION = "0.1.0"
 
-# Rules that trigger bans but skip the critical notification channel
-SILENT_RULES = {"31151", "5710", "5711"}
-
 ENV_FILE = "/etc/homelab-sentinel.env"
+
+# ── YAML configuration ──────────────────────────────────────────────────────
+
+_CONFIG_PATHS = [
+    "/etc/homelab-sentinel.yaml",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "homelab-sentinel.yaml"),
+]
+
+_DEFAULTS = {
+    "alerts": {
+        "full_log_level": 7,
+        "critical_level": 10,
+        "silent_rules": ["31151", "5710", "5711"],
+        "silent_groups": [],
+    },
+    "active_response": {
+        "ban_log": "/var/ossec/logs/ban-history.log",
+        "notify_on_expire": True,
+        "extra_whitelist": [],
+    },
+    "commands": {
+        "enabled": [
+            "help", "start", "status", "event", "alerts", "top", "blocked",
+            "agents", "disk", "uptime", "services", "digest",
+            "block", "unblock", "closeport", "openport",
+            "lockdown", "restore", "restart", "syscheck", "shutdown",
+        ],
+        "totp_required": [
+            "block", "unblock", "closeport", "openport",
+            "lockdown", "restore", "restart", "syscheck", "shutdown",
+        ],
+    },
+    "digest": {
+        "time": "06:30",
+        "sections": {
+            "system": True,
+            "agents": True,
+            "security": True,
+            "services": True,
+            "bitcoin": True,
+        },
+        "bitcoin_lag_warning_blocks": 6,
+    },
+    "integrations": {
+        "bitcoin": {
+            "enabled": True,
+            "mempool_local": "http://minibolt.local:4081",
+            "mempool_public_fallback": True,
+        },
+        "lnd": {
+            "enabled": True,
+            "rest_url": "https://minibolt.local:8080",
+        },
+        "uptime_kuma": {
+            "enabled": True,
+            "url": "http://localhost:3001/api/status-page/default",
+        },
+    },
+    "sanitization": {},
+    "alert_output": {},
+    "bitcoin": {
+        "channel_health": {
+            "min_local_ratio": 0.15,
+            "max_local_ratio": 0.85,
+        },
+    },
+}
+
+_raw_config: dict | None = None
+
+
+def _deep_merge(defaults: dict, overrides: dict) -> dict:
+    """Recursively merge overrides into defaults (overrides win)."""
+    result = dict(defaults)
+    for key, val in overrides.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_merge(result[key], val)
+        else:
+            result[key] = val
+    return result
+
+
+def _load_yaml() -> dict:
+    """Load raw YAML config from disk. Returns empty dict on failure."""
+    global _raw_config
+    if _raw_config is not None:
+        return _raw_config
+    for path in _CONFIG_PATHS:
+        try:
+            with open(path) as f:
+                _raw_config = yaml.safe_load(f) or {}
+                return _raw_config
+        except (FileNotFoundError, PermissionError):
+            continue
+    _raw_config = {}
+    return _raw_config
+
+
+def load_config() -> dict:
+    """Return the full config dict, merged with defaults."""
+    return _deep_merge(_DEFAULTS, _load_yaml())
+
+
+def reload_config() -> None:
+    """Force a config reload (useful after config changes or in tests)."""
+    global _raw_config, cfg
+    _raw_config = None
+    cfg = None
+
+
+# Convenience accessor
+cfg = None  # Will be a dict; initialized lazily
+
+
+def get_cfg() -> dict:
+    """Return the cached config, loading on first access."""
+    global cfg
+    if cfg is None:
+        cfg = load_config()
+    return cfg
+
+
+# Legacy constant — kept for backward compatibility during transition
+SILENT_RULES = set(_DEFAULTS["alerts"]["silent_rules"])
 
 
 def load_env_file(path: str = ENV_FILE) -> None:

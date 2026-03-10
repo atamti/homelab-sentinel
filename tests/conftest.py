@@ -27,22 +27,21 @@ FAKE_ENV = {
     "INDEXER_URL": "https://localhost:9200",
     "INDEXER_USER": "admin",
     "INDEXER_PASS": "admin",
-    "MINIBOLT_MEMPOOL_URL": "http://localhost:4081",
-    "LND_REST_URL": "https://localhost:8080",
     "LND_READONLY_MACAROON_B64": "dGVzdA==",  # base64("test")
-    "UPTIME_KUMA_URL": "http://localhost:3001/api/status-page/default",
-    "DIGEST_TIME": "06:30",
     "COMMANDER_LOG": "/tmp/test-commander.log",
 }
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch, tmp_path):
-    """Inject fake env vars and temp paths for every test."""
+    """Inject fake env vars, reset config cache, and temp paths for every test."""
     for key, val in FAKE_ENV.items():
         monkeypatch.setenv(key, val)
     # Point ban log at a temp file so tests don't touch /var/ossec
     monkeypatch.setenv("COMMANDER_LOG", str(tmp_path / "commander.log"))
+    # Reset YAML config cache so tests get fresh defaults
+    from sentinel.config import reload_config
+    reload_config()
 
 
 # ---------------------------------------------------------------------------
@@ -95,10 +94,15 @@ def notify_ban(monkeypatch, tmp_path):
     ban_log.touch()
 
     with patch("requests.post") as mock_post:
+        from sentinel.config import reload_config, load_config, _deep_merge, _DEFAULTS
+        reload_config()
         mod = _import_script("notify-ban.py", monkeypatch)
-        mod.BAN_LOG = str(ban_log)
+        # Override ban_log path via config to use temp file
+        test_cfg = _deep_merge(_DEFAULTS, {"active_response": {"ban_log": str(ban_log)}})
+        monkeypatch.setattr("sentinel.config.cfg", test_cfg)
         mod.DEBUG_LOG = str(tmp_path / "debug.log")
         mod._mock_post = mock_post
+        mod._ban_log = str(ban_log)
         yield mod
 
 

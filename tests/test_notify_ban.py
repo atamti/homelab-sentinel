@@ -38,7 +38,7 @@ class TestSendTelegram:
 class TestWriteBanLog:
     def test_appends_to_file(self, notify_ban):
         notify_ban.write_ban_log("1.2.3.4", "5710")
-        with open(notify_ban.BAN_LOG) as f:
+        with open(notify_ban._ban_log) as f:
             content = f.read()
         assert "Banned 1.2.3.4" in content
         assert "Rule 5710" in content
@@ -46,7 +46,7 @@ class TestWriteBanLog:
     def test_multiple_entries_append(self, notify_ban):
         notify_ban.write_ban_log("1.1.1.1", "100")
         notify_ban.write_ban_log("2.2.2.2", "200")
-        with open(notify_ban.BAN_LOG) as f:
+        with open(notify_ban._ban_log) as f:
             lines = f.read().strip().splitlines()
         assert len(lines) == 2
 

@@ -1,44 +1,123 @@
-# homelab-sentinel.yaml — sanitization and runtime configuration
+# homelab-sentinel.yaml — full configuration reference
 #
-# Searched at:
+# Searched at (first found wins):
 #   /etc/homelab-sentinel.yaml        (production)
 #   <repo>/homelab-sentinel.yaml      (development)
+#
+# Every key has a sensible default — only override what you need.
+# Secrets (tokens, passwords) stay in .env, NOT here.
 
+# ── Alert routing ────────────────────────────────────────────────────────────
+alerts:
+  # Minimum level forwarded to full-log channel (set in ossec.conf <level>)
+  full_log_level: 7
+  # Minimum level for critical channel notifications
+  critical_level: 10
+  # Rule IDs to suppress from critical channel (high-volume / noisy)
+  silent_rules:
+    - "31151"
+    - "5710"
+    - "5711"
+  # Rule groups to suppress from critical channel
+  silent_groups: []
+
+# ── Active response ──────────────────────────────────────────────────────────
+active_response:
+  ban_log: /var/ossec/logs/ban-history.log
+  # Send Telegram notification when a ban expires
+  notify_on_expire: true
+  # IPs that should never be banned (in addition to Wazuh whitelist)
+  extra_whitelist: []
+
+# ── Telegram commands ────────────────────────────────────────────────────────
+commands:
+  # Commands accepted by the bot (remove to disable)
+  enabled:
+    - help
+    - start
+    - status
+    - event
+    - alerts
+    - top
+    - blocked
+    - agents
+    - disk
+    - uptime
+    - services
+    - digest
+    - block
+    - unblock
+    - closeport
+    - openport
+    - lockdown
+    - restore
+    - restart
+    - syscheck
+    - shutdown
+  # Commands that require a TOTP code
+  totp_required:
+    - block
+    - unblock
+    - closeport
+    - openport
+    - lockdown
+    - restore
+    - restart
+    - syscheck
+    - shutdown
+
+# ── Daily digest ─────────────────────────────────────────────────────────────
+digest:
+  # Time to send daily digest (HH:MM, 24h, server local time)
+  time: "06:30"
+  # Toggle individual digest sections
+  sections:
+    system: true
+    agents: true
+    security: true
+    services: true
+    bitcoin: true
+  # Warn if local node is more than N blocks behind public mempool
+  bitcoin_lag_warning_blocks: 6
+
+# ── External integrations ────────────────────────────────────────────────────
+integrations:
+  bitcoin:
+    enabled: true
+    mempool_local: "http://minibolt.local:4081"
+    mempool_public_fallback: true
+  lnd:
+    enabled: true
+    rest_url: "https://minibolt.local:8080"
+  uptime_kuma:
+    enabled: true
+    url: "http://localhost:3001/api/status-page/default"
+
+# ── Output sanitization ─────────────────────────────────────────────────────
 sanitization:
   # Master toggle — set to false to disable all scrubbing
   enabled: true
-
-  # Dry-run mode — logs what would be scrubbed without replacing.
-  # Useful for tuning during initial setup.
+  # Dry-run mode — logs what would be scrubbed without replacing
   dry_run: false
-
   # Internal hostnames to replace with [host] in output
   internal_hostnames:
     - "masterserver"
     - "minibolt"
-    # - "agentbox"
-
-  # Replace RFC1918 addresses (10.x, 172.16-31.x, 192.168.x) with [internal]
-  # Attacker IPs (public) are never scrubbed
+  # Replace RFC1918 addresses with [internal]
   scrub_internal_ips: true
-
-  # Shorten long filesystem paths (3+ segments) to /.../filename
+  # Shorten long filesystem paths to /.../filename
   scrub_paths: true
-
   # Arbitrary string replacements (case-insensitive)
-  custom_replacements:
-    # "dockerdaemon": "[service-user]"
+  custom_replacements: {}
 
+# ── Alert output formatting ──────────────────────────────────────────────────
 alert_output:
-  # Strip agent names from push notifications (agent ID still shown)
   include_agent_names: false
-  # Omit full_log from push alerts (available via /event)
   include_full_log: false
-  # When full_log is shown (e.g. /event), truncate to this length
   full_log_max_chars: 150
-  # Require TOTP for /event command (pull command for investigation)
   event_command_requires_totp: true
 
+# ── Bitcoin channel health thresholds ────────────────────────────────────────
 bitcoin:
   channel_health:
     min_local_ratio: 0.15

@@ -25,7 +25,7 @@ sys.path.insert(0, os.environ.get(
     "SENTINEL_LIB", os.path.dirname(os.path.abspath(__file__))))
 
 from sentinel import telegram
-from sentinel.config import env, load_env_file, SILENT_RULES
+from sentinel.config import env, load_env_file, get_cfg
 from sentinel.validate import validated_ip
 
 # ── Load config from environment ────────────────────────────────────────────
@@ -37,7 +37,6 @@ BOT_TOKEN        = env("TELEGRAM_BOT_TOKEN")
 FULL_LOG_CHAT_ID = env("TELEGRAM_FULL_LOG_CHAT_ID")
 CRITICAL_CHAT_ID = env("TELEGRAM_CRITICAL_CHAT_ID")
 
-BAN_LOG          = "/var/ossec/logs/ban-history.log"
 DEBUG_LOG        = None   # set to "/tmp/ar_debug.log" to enable
 
 
@@ -56,8 +55,9 @@ def send_telegram(chat_id: str, message: str) -> None:
 
 
 def write_ban_log(ip: str, rule_id: str) -> None:
+    ban_log = get_cfg()["active_response"]["ban_log"]
     try:
-        with open(BAN_LOG, "a") as f:
+        with open(ban_log, "a") as f:
             f.write(f"{time.strftime('%Y/%m/%d %H:%M:%S')} Banned {ip} (Rule {rule_id})\n")
     except Exception as e:
         debug_log(f"Ban log write error: {e}")
@@ -208,6 +208,15 @@ def main() -> None:
         debug_log(f"Invalid IP from alert: {ip}")
         sys.exit(1)
 
+    ar_cfg = get_cfg()["active_response"]
+    silent_rules = set(str(r) for r in get_cfg()["alerts"]["silent_rules"])
+    extra_whitelist = ar_cfg.get("extra_whitelist", [])
+
+    # Skip whitelisted IPs
+    if ip in extra_whitelist:
+        debug_log(f"Whitelisted IP {ip}, skipping")
+        sys.exit(0)
+
     # ── Firewall drop (skip if IP already has a DROP rule) ───────────
     if not is_already_banned(ip):
         run_firewall_drop(raw)
@@ -231,18 +240,19 @@ def main() -> None:
 
         send_telegram(FULL_LOG_CHAT_ID, message)
 
-        if rule_id not in SILENT_RULES:
+        if rule_id not in silent_rules:
             send_telegram(CRITICAL_CHAT_ID, f"🚨 {message}")
 
     # ── Handle delete (ban expiry) ───────────────────────────────────
     elif action == "delete":
-        message = (
-            f"✅ <b>Active Response: Unbanned</b>\n"
-            f"<b>IP:</b> {ip}{country_str}\n"
-            f"<b>Rule:</b> {rule_id}\n"
-            f"<b>Agent:</b> {agent_name}"
-        )
-        send_telegram(FULL_LOG_CHAT_ID, message)
+        if ar_cfg.get("notify_on_expire", True):
+            message = (
+                f"✅ <b>Active Response: Unbanned</b>\n"
+                f"<b>IP:</b> {ip}{country_str}\n"
+                f"<b>Rule:</b> {rule_id}\n"
+                f"<b>Agent:</b> {agent_name}"
+            )
+            send_telegram(FULL_LOG_CHAT_ID, message)
 
     else:
         debug_log(f"Unknown action: {action}")

@@ -34,7 +34,7 @@ import pyotp
 import requests
 
 from sentinel import telegram, wazuh
-from sentinel.config import require_env, env, VERSION
+from sentinel.config import require_env, env, VERSION, get_cfg
 from sentinel.telegram import esc
 from sentinel.validate import validated_ip, validated_port
 from sentinel.sanitize import sanitize, summarize_docker_output
@@ -48,7 +48,6 @@ BOT_TOKEN       = require_env("TELEGRAM_BOT_TOKEN")
 AUTHORIZED_USER = require_env("TELEGRAM_AUTHORIZED_USER")
 TOTP_SECRET     = require_env("TOTP_SECRET")
 DIGEST_CHAT_ID  = require_env("TELEGRAM_AUTHORIZED_USER")  # same as authorized user
-DIGEST_TIME     = env("DIGEST_TIME", "06:30")              # 24h local server time
 
 WAZUH_API       = env("WAZUH_API_URL",  "https://127.0.0.1:55000")
 WAZUH_USER      = require_env("WAZUH_API_USER")
@@ -58,11 +57,7 @@ INDEXER_URL     = env("INDEXER_URL",  "https://localhost:9200")
 INDEXER_USER    = require_env("INDEXER_USER")
 INDEXER_PASS    = require_env("INDEXER_PASS")
 
-MINIBOLT_MEMPOOL = env("MINIBOLT_MEMPOOL_URL", "http://minibolt.local:4081")
-LND_REST         = env("LND_REST_URL",         "https://minibolt.local:8080")
 LND_MACAROON_B64 = require_env("LND_READONLY_MACAROON_B64")
-
-UPTIME_KUMA_URL  = env("UPTIME_KUMA_URL", "http://localhost:3001/api/status-page/default")
 
 LOG_FILE         = env("COMMANDER_LOG", "/var/ossec/logs/commander-errors.log")
 
@@ -122,15 +117,13 @@ def get_lnd_headers() -> dict:
 
 
 def _alert_config() -> dict:
-    """Return the alert_output config section from sanitize module's config."""
-    from sentinel.sanitize import _load_config
-    return _load_config().get("alert_output", {})
+    """Return the alert_output config section."""
+    return get_cfg().get("alert_output", {})
 
 
 def _bitcoin_config() -> dict:
     """Return the bitcoin config section."""
-    from sentinel.sanitize import _load_config
-    return _load_config().get("bitcoin", {})
+    return get_cfg().get("bitcoin", {})
 
 
 def score_channel_health(channels: list) -> tuple[str, str]:
@@ -160,9 +153,10 @@ def score_channel_health(channels: list) -> tuple[str, str]:
 
 
 def lnd_get(endpoint: str) -> dict:
+    lnd_url = get_cfg()["integrations"]["lnd"]["rest_url"]
     try:
         r = requests.get(
-            f"{LND_REST}{endpoint}",
+            f"{lnd_url}{endpoint}",
             headers=get_lnd_headers(),
             verify=False,
             timeout=10
@@ -174,7 +168,8 @@ def lnd_get(endpoint: str) -> dict:
 
 def mempool_get(endpoint: str, public: bool = False) -> dict | str:
     try:
-        base = "https://mempool.space" if public else MINIBOLT_MEMPOOL
+        local_url = get_cfg()["integrations"]["bitcoin"]["mempool_local"]
+        base = "https://mempool.space" if public else local_url
         # Skip SSL verification for local mempool (self-signed cert)
         r    = requests.get(f"{base}{endpoint}", timeout=10,
                             verify=public)
@@ -192,7 +187,8 @@ def mempool_get(endpoint: str, public: bool = False) -> dict | str:
 
 def get_uptime_kuma_status() -> tuple[list, list]:
     try:
-        r        = requests.get(UPTIME_KUMA_URL, timeout=10)
+        kuma_url = get_cfg()["integrations"]["uptime_kuma"]["url"]
+        r        = requests.get(kuma_url, timeout=10)
         data     = r.json()
         monitors = data.get("publicGroupList", [])
 
@@ -203,8 +199,8 @@ def get_uptime_kuma_status() -> tuple[list, list]:
                 id_name[monitor.get("id")] = monitor.get("name", "?")
 
         # Fetch heartbeat data for actual up/down status
-        heartbeat_url = UPTIME_KUMA_URL.replace("/api/status-page/",
-                                                 "/api/status-page/heartbeat/")
+        heartbeat_url = kuma_url.replace("/api/status-page/",
+                                         "/api/status-page/heartbeat/")
         hb       = requests.get(heartbeat_url, timeout=10).json()
         hb_list  = hb.get("heartbeatList", {})
 
@@ -262,8 +258,9 @@ def get_system_stats() -> dict:
 
 def parse_ban_history() -> dict[str, int]:
     """Parse 24h ban history log and return {rule_id: count}."""
+    ban_log = get_cfg()["active_response"]["ban_log"]
     ar_log = subprocess.getoutput(
-        "grep 'Banned' /var/ossec/logs/ban-history.log | "
+        f"grep 'Banned' {ban_log} | "
         "awk -v d=\"$(date -d '24 hours ago' '+%Y/%m/%d %H:%M:%S')\" '$0 > d'"
     )
     rule_counts: dict[str, int] = {}
@@ -604,122 +601,134 @@ def cmd_services(chat_id: str) -> None:
 def cmd_digest(chat_id: str) -> None:
     log("digest: starting")
     lines = ["<b>\u2600\ufe0f Daily Digest</b>\n"]
+    cfg = get_cfg()
 
     # ── System ───────────────────────────────────────────────────────
-    stats = get_system_stats()
+    if cfg["digest"]["sections"]["system"]:
+        stats = get_system_stats()
 
-    lines.append("<b>\U0001f5a5 System</b>")
-    lines.append(f"Uptime: {esc(stats['uptime'])}")
-    lines.append(f"Load (1m/5m/15m): {esc(stats['load'])}")
-    lines.append(f"Memory: {esc(stats['mem'])}")
-    lines.append(f"Disk: {esc(stats['disk'])}\n")
+        lines.append("<b>\U0001f5a5 System</b>")
+        lines.append(f"Uptime: {esc(stats['uptime'])}")
+        lines.append(f"Load (1m/5m/15m): {esc(stats['load'])}")
+        lines.append(f"Memory: {esc(stats['mem'])}")
+        lines.append(f"Disk: {esc(stats['disk'])}\n")
 
     # ── Agents ───────────────────────────────────────────────────────
-    token      = get_wazuh_token()
-    agent_data = {}
-    if token:
-        agents     = wazuh_get("/agents/summary/status", token)
-        agent_data = agents.get("data", {}).get("connection", {})
+    if cfg["digest"]["sections"]["agents"]:
+        token      = get_wazuh_token()
+        agent_data = {}
+        if token:
+            agents     = wazuh_get("/agents/summary/status", token)
+            agent_data = agents.get("data", {}).get("connection", {})
 
-    active_agents = agent_data.get("active", "?")
-    disconnected  = agent_data.get("disconnected", 0)
-    agent_line    = f"Agents: {active_agents} active"
-    if disconnected:
-        agent_line += f", \u26a0\ufe0f {disconnected} disconnected"
-    lines.append(agent_line + "\n")
+        active_agents = agent_data.get("active", "?")
+        disconnected  = agent_data.get("disconnected", 0)
+        agent_line    = f"Agents: {active_agents} active"
+        if disconnected:
+            agent_line += f", \u26a0\ufe0f {disconnected} disconnected"
+        lines.append(agent_line + "\n")
 
     # ── Security ─────────────────────────────────────────────────────
-    rule_counts = parse_ban_history()
-    total_bans  = sum(rule_counts.values())
-    lines.append("<b>\U0001f6e1 Security</b>")
-    lines.append(f"Bans (24h): {total_bans} | Active: {stats['banned']}")
+    if cfg["digest"]["sections"]["security"]:
+        if not cfg["digest"]["sections"]["system"]:
+            stats = get_system_stats()
+        rule_counts = parse_ban_history()
+        total_bans  = sum(rule_counts.values())
+        lines.append("<b>\U0001f6e1 Security</b>")
+        lines.append(f"Bans (last 24h): {total_bans} | Active: {stats['banned']}")
 
-    if rule_counts and token:
-        top_rids   = [rid for rid, _ in sorted(rule_counts.items(), key=lambda x: -x[1])[:5]]
-        rules_meta = lookup_rules(top_rids, token)
-        for rid in top_rids:
-            count = rule_counts[rid]
-            meta  = rules_meta.get(rid, {})
-            level = meta.get("level", "?")
-            desc  = meta.get("description", "Unknown")
-            if len(str(desc)) > 35:
-                desc = str(desc)[:32].rsplit(' ', 1)[0] + '...'
-            lines.append(f"  <b>{esc(str(rid))}</b> (L{level}) \u00d7{count} \u2014 {esc(desc)}")
+        if not cfg["digest"]["sections"]["agents"]:
+            token = get_wazuh_token()
+        if rule_counts and token:
+            top_rids   = [rid for rid, _ in sorted(rule_counts.items(), key=lambda x: -x[1])[:5]]
+            rules_meta = lookup_rules(top_rids, token)
+            for rid in top_rids:
+                count = rule_counts[rid]
+                meta  = rules_meta.get(rid, {})
+                level = meta.get("level", "?")
+                desc  = meta.get("description", "Unknown")
+                if len(str(desc)) > 35:
+                    desc = str(desc)[:32].rsplit(' ', 1)[0] + '...'
+                lines.append(f"  <b>{esc(str(rid))}</b> (L{level}) \u00d7{count} \u2014 {esc(desc)}")
 
-    # Level 10+ by level descending
-    result  = indexer_search({
-        "size": 0,
-        "query": {"bool": {"must": [
-            {"range": {"timestamp":  {"gte": "now-24h"}}},
-            {"range": {"rule.level": {"gte": 10}}}
-        ]}},
-        "aggs": {"by_level": {
-            "terms": {"field": "rule.level", "size": 10, "order": {"_key": "desc"}},
-            "aggs": {"by_rule": {"terms": {"field": "rule.description", "size": 1}}}
-        }}
-    })
-    buckets = result.get("aggregations", {}).get("by_level", {}).get("buckets", [])
+        # Level 10+ by level descending
+        result  = indexer_search({
+            "size": 0,
+            "query": {"bool": {"must": [
+                {"range": {"timestamp":  {"gte": "now-24h"}}},
+                {"range": {"rule.level": {"gte": 10}}}
+            ]}},
+            "aggs": {"by_level": {
+                "terms": {"field": "rule.level", "size": 10, "order": {"_key": "desc"}},
+                "aggs": {"by_rule": {"terms": {"field": "rule.description", "size": 1}}}
+            }}
+        })
+        buckets = result.get("aggregations", {}).get("by_level", {}).get("buckets", [])
 
-    if buckets:
-        lines.append("  Critical alerts (24h):")
-        for b in buckets:
-            level  = b.get("key", "?")
-            count  = b.get("doc_count", 0)
-            rule_b = b.get("by_rule", {}).get("buckets", [])
-            desc   = rule_b[0].get("key", "Unknown") if rule_b else "Unknown"
-            if len(desc) > 35:
-                desc = desc[:32].rsplit(' ', 1)[0] + '...'
-            lines.append(f"  L{level} \u00d7{count} \u2014 {esc(desc)}")
-    else:
-        lines.append("  No Level 10+ alerts \u2705")
+        if buckets:
+            lines.append("  Critical alerts (24h):")
+            for b in buckets:
+                level  = b.get("key", "?")
+                count  = b.get("doc_count", 0)
+                rule_b = b.get("by_rule", {}).get("buckets", [])
+                desc   = rule_b[0].get("key", "Unknown") if rule_b else "Unknown"
+                if len(desc) > 35:
+                    desc = desc[:32].rsplit(' ', 1)[0] + '...'
+                lines.append(f"  L{level} \u00d7{count} \u2014 {esc(desc)}")
+        else:
+            lines.append("  No Level 10+ alerts \u2705")
 
-    lines.append("")
+        lines.append("")
 
     # ── Services ─────────────────────────────────────────────────────
-    up_list, down_list = get_uptime_kuma_status()
-    lines.append("<b>\U0001f4e1 Services</b>")
-    if down_list:
-        lines.append(f"\U0001f534 Down: {', '.join(esc(n) for n in down_list)}")
-    else:
-        lines.append(f"\U0001f7e2 All {len(up_list)} monitors up")
-    lines.append("")
+    if cfg["digest"]["sections"]["services"] and cfg["integrations"]["uptime_kuma"]["enabled"]:
+        up_list, down_list = get_uptime_kuma_status()
+        lines.append("<b>\U0001f4e1 Services</b>")
+        if down_list:
+            lines.append(f"\U0001f534 Down: {', '.join(esc(n) for n in down_list)}")
+        else:
+            lines.append(f"\U0001f7e2 All {len(up_list)} services up")
+        lines.append("")
 
     # ── Bitcoin ──────────────────────────────────────────────────────
-    lines.append("<b>\u20bf Bitcoin</b>")
+    if cfg["digest"]["sections"]["bitcoin"] and cfg["integrations"]["bitcoin"]["enabled"]:
+        lines.append("<b>\u20bf Bitcoin</b>")
 
-    local_height  = mempool_get("/api/blocks/tip/height")
-    public_height = mempool_get("/api/blocks/tip/height", public=True)
+        local_height  = mempool_get("/api/blocks/tip/height")
+        public_height = mempool_get("/api/blocks/tip/height", public=True)
 
-    try:
-        lag = int(public_height) - int(local_height)
-        if lag > 6:
-            lines.append(f"\u26a0\ufe0f Node lagging {lag} blocks ({local_height} vs {public_height})")
-        else:
-            lines.append(f"Block height: {local_height} \u2705")
-    except Exception:
-        lines.append(f"Block height: local={esc(str(local_height))} public={esc(str(public_height))}")
+        lag_threshold = cfg["digest"]["bitcoin_lag_warning_blocks"]
+        try:
+            lag = int(public_height) - int(local_height)
+            if lag > lag_threshold:
+                lines.append(f"\u26a0\ufe0f Node lagging {lag} blocks ({local_height} vs {public_height})")
+            else:
+                lines.append(f"Block height: {local_height} \u2705")
+        except Exception:
+            lines.append(f"Block height: local={esc(str(local_height))} public={esc(str(public_height))}")
 
-    fees = mempool_get("/api/v1/fees/recommended")
-    if isinstance(fees, dict):
-        lines.append(
-            f"Fees: {fees.get('fastestFee')} / "
-            f"{fees.get('halfHourFee')} / "
-            f"{fees.get('hourFee')} sat/vB (fast/30m/1h)"
-        )
+        fees = mempool_get("/api/v1/fees/recommended")
+        if isinstance(fees, dict):
+            lines.append(
+                f"Fees: {fees.get('fastestFee')} / "
+                f"{fees.get('halfHourFee')} / "
+                f"{fees.get('hourFee')} sat/vB (fast/30m/1h)"
+            )
 
-    lnd_info = lnd_get("/v1/getinfo")
-    if lnd_info:
-        synced = "\u2705" if lnd_info.get("synced_to_chain") else "\u26a0\ufe0f not synced"
-        lines.append(f"LND: {synced}")
-    else:
-        lines.append("LND: \u26a0\ufe0f unreachable")
+        if cfg["integrations"]["lnd"]["enabled"]:
+            lnd_info = lnd_get("/v1/getinfo")
+            if lnd_info:
+                synced = "\u2705" if lnd_info.get("synced_to_chain") else "\u26a0\ufe0f not synced"
+                lines.append(f"LND: {synced}")
+            else:
+                lines.append("LND: \u26a0\ufe0f unreachable")
 
-    channels = lnd_get("/v1/channels")
-    if channels:
-        ch_list = channels.get("channels", [])
-        if ch_list:
-            emoji, label = score_channel_health(ch_list)
-            lines.append(f"Channels: {emoji} {label}")
+            channels = lnd_get("/v1/channels")
+            if channels:
+                ch_list = channels.get("channels", [])
+                if ch_list:
+                    emoji, label = score_channel_health(ch_list)
+                    lines.append(f"Channels: {emoji} {label}")
 
     send_message(chat_id, "\n".join(lines))
     log("digest: sent")
@@ -902,6 +911,11 @@ def process_update(update: dict) -> None:
     log(f"cmd: {command}")
     handler = COMMANDS.get(command)
     if handler:
+        cmd_name = command.lstrip("/")
+        enabled = get_cfg()["commands"]["enabled"]
+        if cmd_name not in enabled:
+            send_message(chat_id, f"Command disabled: {command}")
+            return
         handler(chat_id, arg)
     else:
         send_message(chat_id, f"Unknown command: {command}\nType /help for available commands")
@@ -925,7 +939,8 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT,  _shutdown)
 
-    digest_h, digest_m = (int(x) for x in DIGEST_TIME.split(":"))
+    digest_time = get_cfg()["digest"]["time"]
+    digest_h, digest_m = (int(x) for x in digest_time.split(":"))
     digest_minutes = digest_h * 60 + digest_m
 
     while running:

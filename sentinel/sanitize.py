@@ -9,32 +9,14 @@ Configuration is loaded from homelab-sentinel.yaml (sanitization section).
 import os
 import re
 
-import yaml
-
 # ── Config loading ───────────────────────────────────────────────────────────
 
-_CONFIG_PATHS = [
-    "/etc/homelab-sentinel.yaml",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "homelab-sentinel.yaml"),
-]
-
-_config: dict | None = None
+from sentinel.config import _load_yaml, reload_config as _reload_config
 
 
 def _load_config() -> dict:
-    """Load sanitization config from YAML. Returns empty dict on failure."""
-    global _config
-    if _config is not None:
-        return _config
-    for path in _CONFIG_PATHS:
-        try:
-            with open(path) as f:
-                _config = yaml.safe_load(f) or {}
-                return _config
-        except (FileNotFoundError, PermissionError):
-            continue
-    _config = {}
-    return _config
+    """Load raw YAML config. Delegates to sentinel.config."""
+    return _load_yaml()
 
 
 def _san_config() -> dict:
@@ -44,8 +26,7 @@ def _san_config() -> dict:
 
 def reload_config() -> None:
     """Force a config reload (useful after config changes or in tests)."""
-    global _config
-    _config = None
+    _reload_config()
 
 
 # ── HTML-safe regex helper ───────────────────────────────────────────────────
