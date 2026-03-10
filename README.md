@@ -126,7 +126,20 @@ sudo /var/ossec/framework/python/bin/python3 -m py_compile \
 
 ## Wazuh ossec.conf configuration
 
-Register `notify-ban.py` as a command and add active response rules. See the Wazuh documentation for `ossec.conf` active response configuration.
+Add the integration and active response entries to `/var/ossec/etc/ossec.conf`. A ready-to-paste snippet is provided in [`ossec-snippet.conf`](ossec-snippet.conf):
+
+```bash
+# Review the snippet
+cat ossec-snippet.conf
+
+# Edit ossec.conf and paste the blocks inside <ossec_config>
+sudo nano /var/ossec/etc/ossec.conf
+
+# Restart the manager
+sudo systemctl restart wazuh-manager
+```
+
+The deploy script will warn you if these entries are missing.
 
 ## Security notes
 

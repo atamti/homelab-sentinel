@@ -203,11 +203,12 @@ run_cmd "sudo chmod 644 ${YAML_DEST}.example"
 
 # Compare env keys (variable names before '=')
 if [[ "$DRY_RUN" != true && "$env_exists" == "yes" ]]; then
-    new_env_keys=$(
-        run_cmd "comm -23 \
-            <(grep -oP '^[A-Z_]+(?==)' ${ENV_DEST}.example | sort) \
-            <(grep -oP '^[A-Z_]+(?==)' ${ENV_DEST} | sort)" 2>/dev/null || true
-    )
+    diff_cmd="comm -23 <(grep -oP '^[A-Z_]+(?==)' ${ENV_DEST}.example | sort) <(grep -oP '^[A-Z_]+(?==)' ${ENV_DEST} | sort)"
+    if [[ -n "$TARGET" ]]; then
+        new_env_keys=$(ssh "$TARGET" "bash -c '$diff_cmd'" 2>/dev/null || true)
+    else
+        new_env_keys=$(bash -c "$diff_cmd" 2>/dev/null || true)
+    fi
     if [[ -n "$new_env_keys" ]]; then
         warn "New env keys available in ${ENV_DEST}.example:"
         while IFS= read -r key; do
@@ -219,17 +220,46 @@ fi
 
 # Compare YAML top-level keys
 if [[ "$DRY_RUN" != true && "$yaml_exists" == "yes" ]]; then
-    new_yaml_keys=$(
-        run_cmd "comm -23 \
-            <(grep -oP '^[a-z_]+(?=:)' ${YAML_DEST}.example | sort) \
-            <(grep -oP '^[a-z_]+(?=:)' ${YAML_DEST} | sort)" 2>/dev/null || true
-    )
+    diff_cmd="comm -23 <(grep -oP '^[a-z_]+(?=:)' ${YAML_DEST}.example | sort) <(grep -oP '^[a-z_]+(?=:)' ${YAML_DEST} | sort)"
+    if [[ -n "$TARGET" ]]; then
+        new_yaml_keys=$(ssh "$TARGET" "bash -c '$diff_cmd'" 2>/dev/null || true)
+    else
+        new_yaml_keys=$(bash -c "$diff_cmd" 2>/dev/null || true)
+    fi
     if [[ -n "$new_yaml_keys" ]]; then
         warn "New YAML sections available in ${YAML_DEST}.example:"
         while IFS= read -r key; do
             warn "  $key"
         done <<< "$new_yaml_keys"
         warn "Review: diff ${YAML_DEST} ${YAML_DEST}.example"
+    fi
+fi
+
+# ── Check ossec.conf for required entries ────────────────────────────────────
+
+OSSEC_CONF="/var/ossec/etc/ossec.conf"
+
+if [[ "$DRY_RUN" != true ]]; then
+    ossec_exists=$(run_cmd "test -f ${OSSEC_CONF} && echo yes || echo no" 2>/dev/null || echo "no")
+    if [[ "$ossec_exists" == "yes" ]]; then
+        missing=()
+        has_integration=$(run_cmd "grep -q 'custom-telegram' ${OSSEC_CONF} && echo yes || echo no" 2>/dev/null || echo "no")
+        has_command=$(run_cmd "grep -q 'notify-ban' ${OSSEC_CONF} && echo yes || echo no" 2>/dev/null || echo "no")
+
+        [[ "$has_integration" != "yes" ]] && missing+=("custom-telegram integration")
+        [[ "$has_command" != "yes" ]]     && missing+=("notify-ban command/active-response")
+
+        if [[ ${#missing[@]} -gt 0 ]]; then
+            echo ""
+            warn "ossec.conf is missing required entries:"
+            for entry in "${missing[@]}"; do
+                warn "  • ${entry}"
+            done
+            warn "See ossec-snippet.conf for the XML blocks to add to ${OSSEC_CONF}"
+            warn "Then restart: sudo systemctl restart wazuh-manager"
+        else
+            info "ossec.conf: integration + active response entries found ✓"
+        fi
     fi
 fi
 

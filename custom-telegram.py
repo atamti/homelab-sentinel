@@ -26,16 +26,21 @@ sys.path.insert(0, os.environ.get(
     "SENTINEL_LIB", os.path.dirname(os.path.abspath(__file__))))
 
 from sentinel import telegram
-from sentinel.config import env, SILENT_RULES
+from sentinel.config import env, load_env_file, SILENT_RULES
 
 # ── Configuration ─────────────────────────────────────────────────────────────
+# Wazuh spawns integrations directly (not via systemd), so load env explicitly.
+load_env_file()
+
 BOT_TOKEN        = env("TELEGRAM_BOT_TOKEN")
 FULL_LOG_CHAT_ID = env("TELEGRAM_FULL_LOG_CHAT_ID")
 CRITICAL_CHAT_ID = env("TELEGRAM_CRITICAL_CHAT_ID")
 
 
 def send_telegram(chat_id: str, message: str) -> None:
-    telegram.send(BOT_TOKEN, chat_id, message)
+    err = telegram.send(BOT_TOKEN, chat_id, message)
+    if err:
+        sys.stderr.write(f"send failed: {err}\n")
 
 
 def format_alert(alert: dict) -> tuple[str, int, str]:
