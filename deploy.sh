@@ -174,9 +174,13 @@ if [[ "$env_exists" != "yes" ]]; then
     warn "${ENV_DEST} not found — seeding from .env.example"
     warn "You MUST edit this file with real values before starting the service"
     copy_file "${SCRIPT_DIR}/${ENV_EXAMPLE}" "${ENV_DEST}"
-    run_cmd "sudo chmod 600 ${ENV_DEST}"
+    run_cmd "sudo chown root:wazuh ${ENV_DEST}"
+    run_cmd "sudo chmod 640 ${ENV_DEST}"
 else
     info "${ENV_DEST} already exists — not overwriting"
+    # Ensure correct ownership for Wazuh integration scripts
+    run_cmd "sudo chown root:wazuh ${ENV_DEST}"
+    run_cmd "sudo chmod 640 ${ENV_DEST}"
 fi
 
 # ── Seed YAML config if missing ─────────────────────────────────────────────
