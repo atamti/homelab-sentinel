@@ -25,10 +25,14 @@ sys.path.insert(0, os.environ.get(
     "SENTINEL_LIB", os.path.dirname(os.path.abspath(__file__))))
 
 from sentinel import telegram
-from sentinel.config import env, SILENT_RULES
+from sentinel.config import env, load_env_file, SILENT_RULES
 from sentinel.validate import validated_ip
 
 # ── Load config from environment ────────────────────────────────────────────
+# Active response scripts are spawned by Wazuh directly (not via systemd),
+# so the EnvironmentFile isn't inherited.  Load it explicitly.
+load_env_file()
+
 BOT_TOKEN        = env("TELEGRAM_BOT_TOKEN")
 FULL_LOG_CHAT_ID = env("TELEGRAM_FULL_LOG_CHAT_ID")
 CRITICAL_CHAT_ID = env("TELEGRAM_CRITICAL_CHAT_ID")

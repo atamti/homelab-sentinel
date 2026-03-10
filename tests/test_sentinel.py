@@ -33,6 +33,29 @@ class TestConfig:
         assert "31151" in SILENT_RULES
         assert "5710" in SILENT_RULES
 
+    def test_load_env_file(self, tmp_path, monkeypatch):
+        env_file = tmp_path / "test.env"
+        env_file.write_text(
+            "# comment\n"
+            "NEW_VAR=hello\n"
+            "EXISTING=old\n"
+            "\n"
+            "SPACED = world\n"
+        )
+        monkeypatch.setenv("EXISTING", "keep")
+        monkeypatch.delenv("NEW_VAR", raising=False)
+        monkeypatch.delenv("SPACED", raising=False)
+        from sentinel.config import load_env_file
+        load_env_file(str(env_file))
+        import os
+        assert os.environ["NEW_VAR"] == "hello"
+        assert os.environ["EXISTING"] == "keep"  # not overwritten
+        assert os.environ["SPACED"] == "world"
+
+    def test_load_env_file_missing(self):
+        from sentinel.config import load_env_file
+        load_env_file("/nonexistent/path")  # should not raise
+
 
 class TestTelegram:
     def test_send_posts_to_api(self):
