@@ -87,7 +87,9 @@ def log(msg: str) -> None:
 
 def send_message(chat_id: str, text: str) -> None:
     """Send a Telegram message, sanitizing and chunking if needed."""
-    telegram.send(BOT_TOKEN, chat_id, sanitize(text))
+    err = telegram.send(BOT_TOKEN, chat_id, sanitize(text))
+    if err:
+        log(f"send failed: {err}")
 
 
 # ── Wazuh token cache ────────────────────────────────────────────────────────
@@ -217,7 +219,7 @@ def format_table_row(rule_id, level, count, desc) -> str:
             line2_str = line2_str[:32].rsplit(' ', 1)[0] + '...'
         desc_fmt += '\n' + line2_str
 
-    return f"<b>{rule_id}</b> (L{level}) \u00d7{count}\n{desc_fmt}\n\n"
+    return f"<b>{esc(str(rule_id))}</b> (L{level}) \u00d7{count}\n{esc(desc_fmt)}\n\n"
 
 
 # esc() imported from sentinel.telegram
@@ -361,12 +363,12 @@ def cmd_status(chat_id: str) -> None:
             rule_table += f"<b>{rid}</b> (L{level}) \u00d7{count}\n"
 
     text  = "<b>System Status</b>\n\n"
-    text += f"<b>Uptime:</b> {stats['uptime']}\n"
-    text += f"<b>Load (1m/5m/15m):</b> {stats['load']}\n"
-    text += f"<b>Memory:</b> {stats['mem']}\n"
-    text += f"<b>Disk:</b> {stats['disk']}\n\n"
+    text += f"<b>Uptime:</b> {esc(stats['uptime'])}\n"
+    text += f"<b>Load (1m/5m/15m):</b> {esc(stats['load'])}\n"
+    text += f"<b>Memory:</b> {esc(stats['mem'])}\n"
+    text += f"<b>Disk:</b> {esc(stats['disk'])}\n\n"
     text += f"<b>Agents:</b> {active} active / {disconnected} disconnected / {total} total\n"
-    text += f"<b>Banned IPs:</b> {stats['banned']} currently active\n"
+    text += f"<b>Banned IPs:</b> {esc(stats['banned'])} currently active\n"
     text += rule_table
     send_message(chat_id, text)
 
@@ -434,8 +436,8 @@ def cmd_agents(chat_id: str) -> None:
         agent_id = a.get("id", "?")
         ip       = a.get("ip", "?")
         os_name  = a.get("os", {}).get("name", "?")
-        text += f"{emoji} <b>{name}</b> (ID: {agent_id})\n"
-        text += f"   IP: {ip} | OS: {os_name}\n"
+        text += f"{emoji} <b>{esc(name)}</b> (ID: {agent_id})\n"
+        text += f"   IP: {ip} | OS: {esc(os_name)}\n"
 
     send_message(chat_id, text)
 
@@ -556,7 +558,7 @@ def cmd_disk(chat_id: str) -> None:
 
 
 def cmd_uptime(chat_id: str) -> None:
-    send_message(chat_id, f"<pre>{subprocess.getoutput('uptime')}</pre>")
+    send_message(chat_id, f"<pre>{esc(subprocess.getoutput('uptime'))}</pre>")
 
 
 def cmd_services(chat_id: str) -> None:
@@ -580,10 +582,10 @@ def cmd_digest(chat_id: str) -> None:
     stats = get_system_stats()
 
     lines.append("<b>\U0001f5a5 System</b>")
-    lines.append(f"Uptime: {stats['uptime']}")
-    lines.append(f"Load (1m/5m/15m): {stats['load']}")
-    lines.append(f"Memory: {stats['mem']}")
-    lines.append(f"Disk: {stats['disk']}\n")
+    lines.append(f"Uptime: {esc(stats['uptime'])}")
+    lines.append(f"Load (1m/5m/15m): {esc(stats['load'])}")
+    lines.append(f"Memory: {esc(stats['mem'])}")
+    lines.append(f"Disk: {esc(stats['disk'])}\n")
 
     # ── Agents ───────────────────────────────────────────────────────
     token      = get_wazuh_token()
@@ -615,7 +617,7 @@ def cmd_digest(chat_id: str) -> None:
             desc  = meta.get("description", "Unknown")
             if len(str(desc)) > 35:
                 desc = str(desc)[:32].rsplit(' ', 1)[0] + '...'
-            lines.append(f"  <b>{rid}</b> (L{level}) \u00d7{count} \u2014 {desc}")
+            lines.append(f"  <b>{esc(str(rid))}</b> (L{level}) \u00d7{count} \u2014 {esc(desc)}")
 
     # Level 10+ by level descending
     result  = indexer_search({
@@ -640,7 +642,7 @@ def cmd_digest(chat_id: str) -> None:
             desc   = rule_b[0].get("key", "Unknown") if rule_b else "Unknown"
             if len(desc) > 35:
                 desc = desc[:32].rsplit(' ', 1)[0] + '...'
-            lines.append(f"  L{level} \u00d7{count} \u2014 {desc}")
+            lines.append(f"  L{level} \u00d7{count} \u2014 {esc(desc)}")
     else:
         lines.append("  No Level 10+ alerts \u2705")
 
@@ -650,7 +652,7 @@ def cmd_digest(chat_id: str) -> None:
     up_list, down_list = get_uptime_kuma_status()
     lines.append("<b>\U0001f4e1 Services</b>")
     if down_list:
-        lines.append(f"\U0001f534 Down: {', '.join(down_list)}")
+        lines.append(f"\U0001f534 Down: {', '.join(esc(n) for n in down_list)}")
     else:
         lines.append(f"\U0001f7e2 All {len(up_list)} monitors up")
     lines.append("")

@@ -46,7 +46,9 @@ def debug_log(msg: str) -> None:
 
 
 def send_telegram(chat_id: str, message: str) -> None:
-    telegram.send(BOT_TOKEN, chat_id, message)
+    err = telegram.send(BOT_TOKEN, chat_id, message)
+    if err:
+        debug_log(f"send failed: {err}")
 
 
 def write_ban_log(ip: str, rule_id: str) -> None:
