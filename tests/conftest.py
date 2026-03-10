@@ -5,10 +5,9 @@ import json
 import os
 import sys
 import types
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Environment fixtures — provide a complete fake env so both modules can be
@@ -41,6 +40,7 @@ def _clean_env(monkeypatch, tmp_path):
     monkeypatch.setenv("COMMANDER_LOG", str(tmp_path / "commander.log"))
     # Reset YAML config cache so tests get fresh defaults
     from sentinel.config import reload_config
+
     reload_config()
 
 
@@ -48,6 +48,7 @@ def _clean_env(monkeypatch, tmp_path):
 # Module-import helpers — import the scripts as Python modules on demand.
 # Each fixture reloads the module so env patches take effect.
 # ---------------------------------------------------------------------------
+
 
 def _add_project_root():
     """Ensure the repo root is on sys.path."""
@@ -94,7 +95,8 @@ def notify_ban(monkeypatch, tmp_path):
     ban_log.touch()
 
     with patch("requests.post") as mock_post:
-        from sentinel.config import reload_config, load_config, _deep_merge, _DEFAULTS
+        from sentinel.config import _DEFAULTS, _deep_merge, reload_config
+
         reload_config()
         mod = _import_script("notify-ban.py", monkeypatch)
         # Override ban_log path via config to use temp file
@@ -140,29 +142,38 @@ def custom_telegram(monkeypatch, tmp_path):
 # Reusable test data builders
 # ---------------------------------------------------------------------------
 
-def make_ar_input(*, action="add", srcip="1.2.3.4", rule_id="5710",
-                  rule_desc="sshd brute force", rule_level=10,
-                  agent_name="server1", country="Germany"):
+
+def make_ar_input(
+    *,
+    action="add",
+    srcip="1.2.3.4",
+    rule_id="5710",
+    rule_desc="sshd brute force",
+    rule_level=10,
+    agent_name="server1",
+    country="Germany",
+):
     """Build a Wazuh active-response JSON payload."""
-    return json.dumps({
-        "command": action,
-        "parameters": {
-            "alert": {
-                "rule": {
-                    "id": rule_id,
-                    "description": rule_desc,
-                    "level": rule_level,
-                },
-                "agent": {"name": agent_name},
-                "GeoLocation": {"country_name": country},
-                "data": {"srcip": srcip},
-            }
-        },
-    })
+    return json.dumps(
+        {
+            "command": action,
+            "parameters": {
+                "alert": {
+                    "rule": {
+                        "id": rule_id,
+                        "description": rule_desc,
+                        "level": rule_level,
+                    },
+                    "agent": {"name": agent_name},
+                    "GeoLocation": {"country_name": country},
+                    "data": {"srcip": srcip},
+                }
+            },
+        }
+    )
 
 
-def make_telegram_update(text: str, user_id: str = "999", chat_id: str = "999",
-                         update_id: int = 1):
+def make_telegram_update(text: str, user_id: str = "999", chat_id: str = "999", update_id: int = 1):
     """Build a minimal Telegram Bot API update object."""
     return {
         "update_id": update_id,

@@ -6,22 +6,23 @@ and custom terms before sending output through Telegram.
 Configuration is loaded from homelab-sentinel.yaml (sanitization section).
 """
 
-import os
 import re
 
 # ── Config loading ───────────────────────────────────────────────────────────
-
-from sentinel.config import _load_yaml, reload_config as _reload_config
+from sentinel.config import _load_yaml
+from sentinel.config import reload_config as _reload_config
 
 
 def _load_config() -> dict:
     """Load raw YAML config. Delegates to sentinel.config."""
-    return _load_yaml()
+    result: dict = _load_yaml()
+    return result
 
 
 def _san_config() -> dict:
     """Return the sanitization sub-config."""
-    return _load_config().get("sanitization", {})
+    result: dict = _load_config().get("sanitization", {})
+    return result
 
 
 def reload_config() -> None:
@@ -43,7 +44,7 @@ def _replace_outside_tags(text: str, pattern: re.Pattern, replacement: str) -> t
     last_end = 0
     for tag_match in _HTML_TAG_RE.finditer(text):
         # Process text before this tag
-        segment = text[last_end:tag_match.start()]
+        segment = text[last_end : tag_match.start()]
         segment, n = pattern.subn(replacement, segment)
         count += n
         result.append(segment)
@@ -95,7 +96,8 @@ def scrub_internal_ips(text: str) -> tuple[str, int]:
 def scrub_paths(text: str) -> tuple[str, int]:
     """Replace long filesystem paths with shortened versions.
     Returns (scrubbed_text, replacement_count)."""
-    def _shorten(m: re.Match) -> str:
+
+    def _shorten(m: "re.Match[str]") -> str:
         path = m.group()
         parts = path.strip("/").split("/")
         if len(parts) <= 2:
@@ -106,7 +108,7 @@ def scrub_paths(text: str) -> tuple[str, int]:
     result = []
     last_end = 0
     for tag_match in _HTML_TAG_RE.finditer(text):
-        segment = text[last_end:tag_match.start()]
+        segment = text[last_end : tag_match.start()]
         segment, n = _PATH_RE.subn(_shorten, segment)
         count += n
         result.append(segment)
@@ -150,10 +152,7 @@ def summarize_docker_output(text: str) -> str:
         lower = line.lower()
         if lower.startswith("names") or lower.startswith("name"):
             continue
-        if "\t" in line:
-            parts = line.split("\t")
-        else:
-            parts = line.split(None, 2)
+        parts = line.split("\t") if "\t" in line else line.split(None, 2)
         if not parts:
             continue
 
@@ -161,10 +160,7 @@ def summarize_docker_output(text: str) -> str:
         status = parts[1].strip() if len(parts) > 1 else "unknown"
 
         status_lower = status.lower()
-        if status_lower.startswith("up"):
-            emoji = "\U0001f7e2"
-        else:
-            emoji = "\U0001f534"
+        emoji = "\U0001f7e2" if status_lower.startswith("up") else "\U0001f534"
 
         summaries.append(f"{emoji} {name} — {status}")
 
@@ -172,6 +168,7 @@ def summarize_docker_output(text: str) -> str:
 
 
 # ── Main sanitize entry point ────────────────────────────────────────────────
+
 
 def sanitize(text: str) -> str:
     """Apply all enabled scrub passes to text.

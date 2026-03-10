@@ -1,15 +1,12 @@
 """Tests for telegram-commander.py."""
 
-import json
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import MagicMock, patch
 
 import pyotp
-import pytest
-
-from conftest import make_telegram_update, FAKE_ENV
-
+from conftest import FAKE_ENV, make_telegram_update
 
 # ── Pure helpers ─────────────────────────────────────────────────────────────
+
 
 class TestEsc:
     def test_escapes_html_entities(self, commander):
@@ -23,7 +20,7 @@ class TestFormatTableRow:
     def test_basic_formatting(self, commander):
         result = commander.format_table_row("5710", 8, 42, "SSH brute force")
         assert "<b>5710</b>" in result
-        assert "×42" in result
+        assert "\u00d742" in result
         assert "L8" in result
         assert "SSH brute force" in result
 
@@ -75,6 +72,7 @@ class TestValidHeight:
 
 # ── Send message / chunking ─────────────────────────────────────────────────
 
+
 class TestSendMessage:
     def test_single_chunk(self, commander):
         commander.send_message("123", "short message")
@@ -90,6 +88,7 @@ class TestSendMessage:
 
 
 # ── TOTP ─────────────────────────────────────────────────────────────────────
+
 
 class TestTOTP:
     def test_verify_valid_code(self, commander):
@@ -119,6 +118,7 @@ class TestTOTP:
 
 
 # ── Authorization ────────────────────────────────────────────────────────────
+
 
 class TestProcessUpdate:
     def test_unauthorized_user_rejected(self, commander):
@@ -186,7 +186,7 @@ class TestScoreChannelHealth:
 
     def test_rebalancing_shows_count_and_pcts(self, commander):
         channels = [
-            {"active": True, "capacity": "1000000", "local_balance": "50000"},   # 5%
+            {"active": True, "capacity": "1000000", "local_balance": "50000"},  # 5%
             {"active": True, "capacity": "1000000", "local_balance": "500000"},  # 50% OK
             {"active": True, "capacity": "1000000", "local_balance": "950000"},  # 95%
         ]
@@ -208,8 +208,7 @@ class TestCmdUptime:
 class TestCmdDisk:
     def test_sends_disk_output(self, commander):
         commander._mock_getoutput.return_value = (
-            "Filesystem  Size  Used Avail Use% Mounted\n"
-            "/dev/sda1    50G   20G   28G  42% /"
+            "Filesystem  Size  Used Avail Use% Mounted\n/dev/sda1    50G   20G   28G  42% /"
         )
         commander.cmd_disk("123")
         text = commander._mock_post.call_args[1]["json"]["text"]
@@ -230,7 +229,7 @@ class TestCmdBlocked:
     def test_displays_ban_info(self, commander):
         commander._mock_getoutput.side_effect = [
             "DROP  all  -- 1.2.3.4  0.0.0.0/0",  # iptables page
-            "5",                                    # total count
+            "5",  # total count
             "2026/03/09 Banned 1.2.3.4 (Rule 5710)",  # ban log page
         ]
         commander.cmd_blocked("123")
@@ -238,7 +237,7 @@ class TestCmdBlocked:
 
     def test_ip_lookup(self, commander):
         commander._mock_getoutput.side_effect = [
-            "DROP  all  -- 1.2.3.4  0.0.0.0/0",      # iptables grep
+            "DROP  all  -- 1.2.3.4  0.0.0.0/0",  # iptables grep
             "2026/03/09 Banned 1.2.3.4 (Rule 5710)",  # history grep
         ]
         commander.cmd_blocked("123", "1.2.3.4")
@@ -255,32 +254,29 @@ class TestCmdBlocked:
 class TestCmdStatus:
     def test_fetches_wazuh_and_system_info(self, commander):
         commander._mock_getoutput.side_effect = [
-            "0.5 0.3 0.2",                  # load_str (cat /proc/loadavg)
-            "2",                             # nproc
-            "45",                            # mem_pct_str
-            "45",                            # disk_pct_str
-            "55000",                         # thermal_zone temp (55°C)
-            "",                              # sensors fallback (not reached)
-            "up 2 days",                     # uptime -p
-            "4.1Gi/15Gi",                    # free -h (mem)
-            "45% used (20G/50G)",            # df -h (disk)
-            "3",                             # iptables banned count
-            "",                              # ban history grep
+            "0.5 0.3 0.2",  # load_str (cat /proc/loadavg)
+            "2",  # nproc
+            "45",  # mem_pct_str
+            "45",  # disk_pct_str
+            "55000",  # thermal_zone temp (55°C)
+            "",  # sensors fallback (not reached)
+            "up 2 days",  # uptime -p
+            "4.1Gi/15Gi",  # free -h (mem)
+            "45% used (20G/50G)",  # df -h (disk)
+            "3",  # iptables banned count
+            "",  # ban history grep
         ]
         # Mock Wazuh API auth + agents call
         token_resp = MagicMock()
         token_resp.json.return_value = {"data": {"token": "fake-jwt"}}
         agents_resp = MagicMock()
-        agents_resp.json.return_value = {
-            "data": {"connection": {"active": 3, "disconnected": 0, "total": 3}}
-        }
+        agents_resp.json.return_value = {"data": {"connection": {"active": 3, "disconnected": 0, "total": 3}}}
         commander._mock_post.return_value = token_resp
         commander._mock_get.return_value = agents_resp
 
         commander.cmd_status("123")
         # Should have sent at least one message
-        sent_calls = [c for c in commander._mock_post.call_args_list
-                      if "sendMessage" in str(c)]
+        sent_calls = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         assert len(sent_calls) >= 1
 
 
@@ -288,19 +284,22 @@ class TestCmdAlerts:
     def test_displays_alerts(self, commander):
         search_resp = MagicMock()
         search_resp.json.return_value = {
-            "hits": {"hits": [{
-                "_source": {
-                    "id": "abc123",
-                    "timestamp": "2026-03-09T10:00:00",
-                    "rule": {"id": "5710", "level": 10, "description": "SSH brute force"},
-                    "agent": {"id": "001", "name": "server1"},
-                }
-            }]}
+            "hits": {
+                "hits": [
+                    {
+                        "_source": {
+                            "id": "abc123",
+                            "timestamp": "2026-03-09T10:00:00",
+                            "rule": {"id": "5710", "level": 10, "description": "SSH brute force"},
+                            "agent": {"id": "001", "name": "server1"},
+                        }
+                    }
+                ]
+            }
         }
         commander._mock_post.return_value = search_resp
         commander.cmd_alerts("123")
-        sent = [c for c in commander._mock_post.call_args_list
-                if "sendMessage" in str(c)]
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         assert len(sent) >= 1
         text = sent[0][1]["json"]["text"]
         assert "Agent 001" in text
@@ -326,31 +325,32 @@ class TestCmdEvent:
         commander._mock_post.return_value = search_resp
         code = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
         commander.cmd_event("123", f"nonexistent {code}")
-        sent = [c for c in commander._mock_post.call_args_list
-                if "sendMessage" in str(c)]
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         assert any("No alert found" in str(c) for c in sent)
 
     def test_truncates_full_log(self, commander):
         long_log = "A" * 300
         search_resp = MagicMock()
         search_resp.json.return_value = {
-            "hits": {"hits": [{
-                "_source": {
-                    "id": "abc123",
-                    "timestamp": "2026-03-09T10:00:00",
-                    "rule": {"id": "5710", "level": 10, "description": "test",
-                             "groups": ["sshd"]},
-                    "agent": {"id": "001", "name": "server1"},
-                    "data": {},
-                    "full_log": long_log,
-                }
-            }]}
+            "hits": {
+                "hits": [
+                    {
+                        "_source": {
+                            "id": "abc123",
+                            "timestamp": "2026-03-09T10:00:00",
+                            "rule": {"id": "5710", "level": 10, "description": "test", "groups": ["sshd"]},
+                            "agent": {"id": "001", "name": "server1"},
+                            "data": {},
+                            "full_log": long_log,
+                        }
+                    }
+                ]
+            }
         }
         commander._mock_post.return_value = search_resp
         code = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
         commander.cmd_event("123", f"abc123 {code}")
-        sent = [c for c in commander._mock_post.call_args_list
-                if "sendMessage" in str(c)]
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         text = sent[-1][1]["json"]["text"]
         # full_log should be truncated to 150 + "..."
         assert "A" * 150 in text
@@ -361,6 +361,7 @@ class TestCmdEvent:
 
 # ── Active response commands ─────────────────────────────────────────────────
 
+
 class TestCmdBlock:
     def test_rejects_without_totp(self, commander):
         commander.cmd_block("123", "1.2.3.4")
@@ -370,8 +371,7 @@ class TestCmdBlock:
     def test_blocks_with_valid_totp(self, commander):
         code = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
         commander.cmd_block("123", f"1.2.3.4 {code}")
-        sent = [c for c in commander._mock_post.call_args_list
-                if "sendMessage" in str(c)]
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         assert any("Blocked" in str(c) for c in sent)
 
 
@@ -379,8 +379,7 @@ class TestCmdUnblock:
     def test_unblocks_with_valid_totp(self, commander):
         code = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
         commander.cmd_unblock("123", f"1.2.3.4 {code}")
-        sent = [c for c in commander._mock_post.call_args_list
-                if "sendMessage" in str(c)]
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         assert any("Unblocked" in str(c) for c in sent)
 
 
@@ -393,8 +392,7 @@ class TestCmdLockdown:
     def test_activates_with_valid_totp(self, commander):
         code = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
         commander.cmd_lockdown("123", code)
-        sent = [c for c in commander._mock_post.call_args_list
-                if "sendMessage" in str(c)]
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         assert any("LOCKDOWN" in str(c) for c in sent)
 
 
@@ -403,6 +401,5 @@ class TestCmdRestore:
         code = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
         with patch("os.path.exists", return_value=False):
             commander.cmd_restore("123", code)
-        sent = [c for c in commander._mock_post.call_args_list
-                if "sendMessage" in str(c)]
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         assert any("No pre-lockdown backup" in str(c) for c in sent)

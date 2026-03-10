@@ -4,12 +4,13 @@ import json
 import os
 import subprocess
 import time
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
+import pytest
 from conftest import make_ar_input
 
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
 
 class TestSendTelegram:
     def test_sends_post_to_correct_url(self, notify_ban):
@@ -70,6 +71,7 @@ class TestIsDuplicate:
 
 
 # ── Main flow ────────────────────────────────────────────────────────────────
+
 
 class TestMainAdd:
     """Test the main() function with action=add."""
@@ -152,10 +154,12 @@ class TestMainDelete:
 
 class TestMainEdgeCases:
     def test_no_srcip_exits_cleanly(self, notify_ban):
-        payload = json.dumps({
-            "command": "add",
-            "parameters": {"alert": {"rule": {}, "agent": {}, "data": {}}},
-        })
+        payload = json.dumps(
+            {
+                "command": "add",
+                "parameters": {"alert": {"rule": {}, "agent": {}, "data": {}}},
+            }
+        )
         with (
             patch("sys.stdin") as mock_stdin,
             patch.object(notify_ban, "run_firewall_drop"),
@@ -166,6 +170,7 @@ class TestMainEdgeCases:
 
 
 # ── iptables dedup ───────────────────────────────────────────────────────────────
+
 
 class TestIsAlreadyBanned:
     def test_returns_true_when_rule_exists(self, notify_ban):
@@ -241,11 +246,7 @@ class TestDeduplicateIptables:
         assert restore_call[1]["input"].count("-A INPUT -s 1.2.3.4/32 -j DROP") == 1
 
     def test_noop_when_no_duplicates(self, notify_ban):
-        iptables_output = (
-            "*filter\n"
-            "-A INPUT -s 1.2.3.4/32 -j DROP\n"
-            "COMMIT\n"
-        )
+        iptables_output = "*filter\n-A INPUT -s 1.2.3.4/32 -j DROP\nCOMMIT\n"
         mock_save = MagicMock(stdout=iptables_output)
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = mock_save
@@ -263,7 +264,3 @@ class TestDeduplicateIptables:
             mock_stdin.read.return_value = "NOT JSON"
             with pytest.raises(SystemExit):
                 notify_ban.main()
-
-
-# Import pytest for the raises helper used above
-import pytest

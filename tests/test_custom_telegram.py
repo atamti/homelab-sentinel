@@ -1,12 +1,7 @@
 """Tests for custom-telegram.py."""
 
 import json
-import os
 from unittest.mock import patch
-
-import pytest
-
-from conftest import FAKE_ENV
 
 
 class TestFormatAlert:
@@ -37,12 +32,12 @@ class TestFormatAlert:
             "data": {},
             "id": "x",
         }
-        msg, level, rule_id = custom_telegram.format_alert(alert)
+        msg, _level, _rule_id = custom_telegram.format_alert(alert)
         assert "Source IP" not in msg
 
     def test_handles_missing_fields(self, custom_telegram):
         alert = {}
-        msg, level, rule_id = custom_telegram.format_alert(alert)
+        msg, level, _rule_id = custom_telegram.format_alert(alert)
         assert "N/A" in msg
         assert level == 0
 
@@ -55,7 +50,7 @@ class TestFormatAlert:
             "id": "port-1",
             "full_log": "New listening port 9090/tcp detected",
         }
-        msg, level, rule_id = custom_telegram.format_alert(alert)
+        msg, _level, _rule_id = custom_telegram.format_alert(alert)
         assert "Agent:</b> 002" in msg
         assert "Port:</b> 9090" in msg
         assert "Status:</b> opened" in msg
@@ -70,7 +65,7 @@ class TestFormatAlert:
             "id": "port-2",
             "full_log": "Previously active port 8080/tcp became inactive",
         }
-        msg, level, rule_id = custom_telegram.format_alert(alert)
+        msg, _level, _rule_id = custom_telegram.format_alert(alert)
         assert "Agent:</b> 001" in msg
         assert "Port:</b> 8080" in msg
         assert "Status:</b> closed" in msg
@@ -84,7 +79,7 @@ class TestFormatAlert:
             "id": "port-3",
             "full_log": "",
         }
-        msg, level, rule_id = custom_telegram.format_alert(alert)
+        msg, _level, _rule_id = custom_telegram.format_alert(alert)
         assert "Agent:</b> 003" in msg
         assert "Port:</b> unknown" in msg
         assert "Status:</b> changed" in msg

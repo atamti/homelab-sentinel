@@ -29,14 +29,38 @@ _DEFAULTS = {
     },
     "commands": {
         "enabled": [
-            "help", "start", "status", "event", "alerts", "top", "blocked",
-            "agents", "disk", "uptime", "services", "digest",
-            "block", "unblock", "closeport", "openport",
-            "lockdown", "restore", "restart", "syscheck", "shutdown",
+            "help",
+            "start",
+            "status",
+            "event",
+            "alerts",
+            "top",
+            "blocked",
+            "agents",
+            "disk",
+            "uptime",
+            "services",
+            "digest",
+            "block",
+            "unblock",
+            "closeport",
+            "openport",
+            "lockdown",
+            "restore",
+            "restart",
+            "syscheck",
+            "shutdown",
         ],
         "totp_required": [
-            "block", "unblock", "closeport", "openport",
-            "lockdown", "restore", "restart", "syscheck", "shutdown",
+            "block",
+            "unblock",
+            "closeport",
+            "openport",
+            "lockdown",
+            "restore",
+            "restart",
+            "syscheck",
+            "shutdown",
         ],
     },
     "digest": {
@@ -166,7 +190,8 @@ def get_cfg() -> dict:
 
 
 # Legacy constant — kept for backward compatibility during transition
-SILENT_RULES = set(_DEFAULTS["alerts"]["silent_rules"])
+_alerts: dict = _DEFAULTS["alerts"]  # type: ignore[assignment]
+SILENT_RULES = set(_alerts["silent_rules"])
 
 
 def load_env_file(path: str = ENV_FILE) -> None:

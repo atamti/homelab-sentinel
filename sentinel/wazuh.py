@@ -15,7 +15,8 @@ def get_token(api_url: str, user: str, password: str) -> str | None:
             verify=False,
             timeout=10,
         )
-        return r.json()["data"]["token"]
+        data: dict = r.json()
+        return str(data["data"]["token"])
     except Exception:
         return None
 
@@ -29,7 +30,8 @@ def api_get(api_url: str, endpoint: str, token: str) -> dict:
             verify=False,
             timeout=10,
         )
-        return r.json()
+        result: dict = r.json()
+        return result
     except Exception:
         return {}
 
@@ -44,6 +46,7 @@ def indexer_search(indexer_url: str, user: str, password: str, query: dict) -> d
             verify=False,
             timeout=10,
         )
-        return r.json()
+        result: dict = r.json()
+        return result
     except Exception:
         return {}

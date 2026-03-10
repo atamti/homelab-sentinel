@@ -15,17 +15,17 @@ Environment variables are loaded from /etc/homelab-sentinel.env
 (injected via systemd EnvironmentFile or sourced at runtime).
 """
 
+import contextlib
 import json
 import os
 import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.environ.get(
-    "SENTINEL_LIB", os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.environ.get("SENTINEL_LIB", os.path.dirname(os.path.abspath(__file__))))
 
 from sentinel import telegram
-from sentinel.config import env, load_env_file, get_cfg
+from sentinel.config import env, get_cfg, load_env_file
 from sentinel.validate import validated_ip
 
 # ── Load config from environment ────────────────────────────────────────────
@@ -33,14 +33,15 @@ from sentinel.validate import validated_ip
 # so the EnvironmentFile isn't inherited.  Load it explicitly.
 load_env_file()
 
-BOT_TOKEN        = env("TELEGRAM_BOT_TOKEN")
+BOT_TOKEN = env("TELEGRAM_BOT_TOKEN")
 FULL_LOG_CHAT_ID = env("TELEGRAM_FULL_LOG_CHAT_ID")
 CRITICAL_CHAT_ID = env("TELEGRAM_CRITICAL_CHAT_ID")
 
-DEBUG_LOG        = None   # set to "/tmp/ar_debug.log" to enable
+DEBUG_LOG = None  # set to "/tmp/ar_debug.log" to enable
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def debug_log(msg: str) -> None:
     if DEBUG_LOG:
@@ -74,10 +75,8 @@ def is_duplicate(ip: str, ttl: int = 10) -> bool:
         if time.time() - os.path.getmtime(path) < ttl:
             return True
         # Stale lock — remove before recreating
-        try:
+        with contextlib.suppress(FileNotFoundError):
             os.unlink(path)
-        except FileNotFoundError:
-            pass
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.write(fd, str(time.time()).encode())
@@ -110,7 +109,10 @@ def deduplicate_iptables() -> int:
     """
     try:
         raw = subprocess.run(
-            ["iptables-save"], capture_output=True, text=True, check=True,
+            ["iptables-save"],
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         seen: set[str] = set()
         deduped_lines: list[str] = []
@@ -144,12 +146,7 @@ def run_firewall_drop(alert_json: str) -> None:
     """
     fw_bin = "/var/ossec/active-response/bin/firewall-drop"
     try:
-        proc = subprocess.Popen(
-            [fw_bin],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
+        proc = subprocess.Popen([fw_bin], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         proc.stdin.write(alert_json.encode())
         proc.stdin.flush()
 
@@ -172,6 +169,7 @@ def run_firewall_drop(alert_json: str) -> None:
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     try:
         raw = sys.stdin.read()
@@ -181,20 +179,19 @@ def main() -> None:
         debug_log(f"JSON parse error: {e}")
         sys.exit(1)
 
-    action     = data.get("command", "")
-    alert      = data.get("parameters", {}).get("alert", {})
-    rule       = alert.get("rule", {})
-    agent      = alert.get("agent", {})
-    geo        = alert.get("GeoLocation", {})
-    src_data   = alert.get("data", {})
+    action = data.get("command", "")
+    alert = data.get("parameters", {}).get("alert", {})
+    rule = alert.get("rule", {})
+    agent = alert.get("agent", {})
+    geo = alert.get("GeoLocation", {})
+    src_data = alert.get("data", {})
 
-    ip        = src_data.get("srcip", "")
-    rule_id   = str(rule.get("id", ""))
+    ip = src_data.get("srcip", "")
+    rule_id = str(rule.get("id", ""))
     rule_desc = rule.get("description", "Unknown rule")
-    rule_lvl  = rule.get("level", 0)
     agent_name = agent.get("name", "unknown")
 
-    country     = geo.get("country_name", "")
+    country = geo.get("country_name", "")
     country_str = f" [{country}]" if country else ""
 
     if not ip:

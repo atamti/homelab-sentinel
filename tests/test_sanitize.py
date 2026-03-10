@@ -1,14 +1,12 @@
 """Tests for sentinel/sanitize.py."""
 
-import os
-import textwrap
 from unittest.mock import patch
 
 import pytest
 import yaml
 
-from sentinel import sanitize
 from sentinel import config as _sentinel_config
+from sentinel import sanitize
 
 
 @pytest.fixture(autouse=True)
@@ -34,13 +32,12 @@ def _patch_config(tmp_path, cfg: dict):
 
 # ── scrub_hostnames ──────────────────────────────────────────────────────────
 
+
 class TestScrubHostnames:
     def test_replaces_configured_hostnames(self, tmp_path):
         cfg = {"sanitization": {"internal_hostnames": ["masterserver", "minibolt"]}}
         with _patch_config(tmp_path, cfg):
-            result, count = sanitize.scrub_hostnames(
-                "Agent: masterserver | Target: minibolt"
-            )
+            result, count = sanitize.scrub_hostnames("Agent: masterserver | Target: minibolt")
         assert result == "Agent: [host] | Target: [host]"
         assert count == 2
 
@@ -53,9 +50,7 @@ class TestScrubHostnames:
     def test_preserves_html_tags(self, tmp_path):
         cfg = {"sanitization": {"internal_hostnames": ["myhost"]}}
         with _patch_config(tmp_path, cfg):
-            result, _ = sanitize.scrub_hostnames(
-                "<b>Agent:</b> myhost is up"
-            )
+            result, _ = sanitize.scrub_hostnames("<b>Agent:</b> myhost is up")
         assert "<b>Agent:</b>" in result
         assert "myhost" not in result
 
@@ -68,6 +63,7 @@ class TestScrubHostnames:
 
 
 # ── scrub_internal_ips ───────────────────────────────────────────────────────
+
 
 class TestScrubInternalIPs:
     def test_scrubs_rfc1918_class_a(self, tmp_path):
@@ -99,9 +95,7 @@ class TestScrubInternalIPs:
     def test_preserves_html_tags(self, tmp_path):
         cfg = {"sanitization": {}}
         with _patch_config(tmp_path, cfg):
-            result, _ = sanitize.scrub_internal_ips(
-                '<a href="10.0.0.1">link</a> ip=10.0.0.1'
-            )
+            result, _ = sanitize.scrub_internal_ips('<a href="10.0.0.1">link</a> ip=10.0.0.1')
         # Tag content preserved, text content scrubbed
         assert "10.0.0.1" in result  # inside tag
         assert result.endswith("ip=[internal]")
@@ -109,13 +103,12 @@ class TestScrubInternalIPs:
 
 # ── scrub_paths ──────────────────────────────────────────────────────────────
 
+
 class TestScrubPaths:
     def test_shortens_long_paths(self, tmp_path):
         cfg = {"sanitization": {}}
         with _patch_config(tmp_path, cfg):
-            result, count = sanitize.scrub_paths(
-                "file at /var/ossec/logs/alerts.log"
-            )
+            result, count = sanitize.scrub_paths("file at /var/ossec/logs/alerts.log")
         assert "/.../alerts.log" in result
         assert count == 1
 
@@ -129,14 +122,13 @@ class TestScrubPaths:
     def test_preserves_html_tags(self, tmp_path):
         cfg = {"sanitization": {}}
         with _patch_config(tmp_path, cfg):
-            result, _ = sanitize.scrub_paths(
-                '<pre>/var/ossec/logs/test.log</pre>'
-            )
+            result, _ = sanitize.scrub_paths("<pre>/var/ossec/logs/test.log</pre>")
         assert "<pre>" in result
         assert "</pre>" in result
 
 
 # ── scrub_custom ─────────────────────────────────────────────────────────────
+
 
 class TestScrubCustom:
     def test_applies_custom_replacements(self, tmp_path):
@@ -161,6 +153,7 @@ class TestScrubCustom:
 
 
 # ── summarize_docker_output ──────────────────────────────────────────────────
+
 
 class TestSummarizeDockerOutput:
     def test_formats_running_containers(self):
@@ -190,6 +183,7 @@ class TestSummarizeDockerOutput:
 
 # ── sanitize (main entry point) ──────────────────────────────────────────────
 
+
 class TestSanitize:
     def test_disabled_returns_unchanged(self, tmp_path):
         cfg = {"sanitization": {"enabled": False, "internal_hostnames": ["myhost"]}}
@@ -208,9 +202,7 @@ class TestSanitize:
             }
         }
         with _patch_config(tmp_path, cfg):
-            result = sanitize.sanitize(
-                "Agent: masterserver at 192.168.1.5 file /var/ossec/logs/test.log"
-            )
+            result = sanitize.sanitize("Agent: masterserver at 192.168.1.5 file /var/ossec/logs/test.log")
         assert "masterserver" not in result
         assert "192.168.1.5" not in result
         assert "[host]" in result
@@ -238,9 +230,7 @@ class TestSanitize:
             }
         }
         with _patch_config(tmp_path, cfg):
-            result = sanitize.sanitize(
-                "Rule 5710 (L8) attacker 45.33.22.11 from masterserver"
-            )
+            result = sanitize.sanitize("Rule 5710 (L8) attacker 45.33.22.11 from masterserver")
         assert "5710" in result
         assert "L8" in result
         assert "45.33.22.11" in result

@@ -23,17 +23,16 @@ import os
 import re
 import sys
 
-sys.path.insert(0, os.environ.get(
-    "SENTINEL_LIB", os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.environ.get("SENTINEL_LIB", os.path.dirname(os.path.abspath(__file__))))
 
 from sentinel import telegram
-from sentinel.config import env, load_env_file, get_cfg
+from sentinel.config import env, get_cfg, load_env_file
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 # Wazuh spawns integrations directly (not via systemd), so load env explicitly.
 load_env_file()
 
-BOT_TOKEN        = env("TELEGRAM_BOT_TOKEN")
+BOT_TOKEN = env("TELEGRAM_BOT_TOKEN")
 FULL_LOG_CHAT_ID = env("TELEGRAM_FULL_LOG_CHAT_ID")
 CRITICAL_CHAT_ID = env("TELEGRAM_CRITICAL_CHAT_ID")
 
@@ -51,7 +50,7 @@ def _parse_port_change(full_log: str) -> tuple[str, str]:
     Falls back to ('unknown', 'changed') if parsing fails.
     """
     # Look for port number in common syscollector / netstat patterns
-    port_match = re.search(r'\b(\d{1,5})(?:/(?:tcp|udp))?\b', full_log)
+    port_match = re.search(r"\b(\d{1,5})(?:/(?:tcp|udp))?\b", full_log)
     port = port_match.group(1) if port_match else "unknown"
 
     lower = full_log.lower()
@@ -66,17 +65,17 @@ def _parse_port_change(full_log: str) -> tuple[str, str]:
 
 
 def format_alert(alert: dict) -> tuple[str, int, str]:
-    rule        = alert.get("rule", {})
-    agent       = alert.get("agent", {})
-    level       = rule.get("level", 0)
+    rule = alert.get("rule", {})
+    agent = alert.get("agent", {})
+    level = rule.get("level", 0)
     description = rule.get("description", "N/A")
-    rule_id     = rule.get("id", "N/A")
-    agent_id    = agent.get("id", "?")
-    timestamp   = alert.get("timestamp", "N/A")
-    src_ip      = alert.get("data", {}).get("srcip", "")
-    alert_id    = alert.get("id", "N/A")
+    rule_id = rule.get("id", "N/A")
+    agent_id = agent.get("id", "?")
+    timestamp = alert.get("timestamp", "N/A")
+    src_ip = alert.get("data", {}).get("srcip", "")
+    alert_id = alert.get("id", "N/A")
 
-    msg  = f"<b>Wazuh Alert (Level {level})</b>\n"
+    msg = f"<b>Wazuh Alert (Level {level})</b>\n"
     msg += f"<b>Rule:</b> {rule_id} - {description}\n"
     msg += f"<b>Time:</b> {timestamp[:19]}\n"
     if src_ip:
