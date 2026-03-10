@@ -316,7 +316,7 @@ def cmd_help(chat_id: str) -> None:
     text += "/agents - List all agents\n"
     text += "/alerts - Recent high-level alerts (Level 8+)\n"
     text += "/top - Top triggered rules (24h)\n"
-    text += "/blocked - Currently blocked IPs + recent ban history\n"
+    text += "/blocked [ip|page] - Blocked IPs + ban history\n"
     text += "/disk - Disk usage\n"
     text += "/uptime - System uptime\n"
     text += "/services - Docker container status\n"
@@ -499,16 +499,51 @@ def cmd_top(chat_id: str) -> None:
     send_message(chat_id, text)
 
 
-def cmd_blocked(chat_id: str) -> None:
-    current = subprocess.getoutput("iptables -L INPUT -n | grep DROP | head -20")
-    recent  = subprocess.getoutput("tail -20 /var/ossec/logs/ban-history.log")
+def cmd_blocked(chat_id: str, arg: str = "") -> None:
+    arg = arg.strip()
+
+    # IP lookup mode
+    if arg and not arg.isdigit():
+        try:
+            ip = validated_ip(arg)
+        except ValueError:
+            send_message(chat_id, f"⛔ Invalid IP address: {esc(arg)}")
+            return
+        current = subprocess.getoutput(
+            f"iptables -L INPUT -n | grep DROP | grep -F '{ip}'"
+        )
+        history = subprocess.getoutput(
+            f"grep -F '{ip}' /var/ossec/logs/ban-history.log | tail -20"
+        )
+        send_message(chat_id,
+            f"<b>Lookup: {esc(ip)}</b>\n\n"
+            f"<b>Active rules:</b>\n<pre>{esc(current) or 'Not currently banned'}</pre>\n\n"
+            f"<b>Ban history:</b>\n<pre>{esc(history) or 'No history found'}</pre>"
+        )
+        return
+
+    # Pagination mode — default page 1, 20 per page
+    page = max(1, int(arg)) if arg.isdigit() else 1
+    per_page = 20
+    skip = (page - 1) * per_page
+
+    current = subprocess.getoutput(
+        f"iptables -L INPUT -n | grep DROP | tail -n +{skip + 1} | head -{per_page}"
+    )
+    total = subprocess.getoutput(
+        "iptables -L INPUT -n | grep -c DROP"
+    ).strip()
+
+    recent = subprocess.getoutput(
+        f"tail -{per_page + skip} /var/ossec/logs/ban-history.log | head -{per_page}"
+    )
 
     send_message(chat_id,
-        f"<b>Currently Banned (active, max 20)</b>\n"
+        f"<b>Currently Banned (page {page}, {total} total)</b>\n"
         f"<pre>{esc(current) or 'None'}</pre>"
     )
     send_message(chat_id,
-        f"<b>Recent Bans (last 20)</b>\n"
+        f"<b>Recent Bans (page {page})</b>\n"
         f"<pre>{esc(recent) or 'None'}</pre>"
     )
 
@@ -803,7 +838,7 @@ COMMANDS = {
     "/agents":    lambda c, a: cmd_agents(c),
     "/alerts":    lambda c, a: cmd_alerts(c),
     "/top":       lambda c, a: cmd_top(c),
-    "/blocked":   lambda c, a: cmd_blocked(c),
+    "/blocked":   cmd_blocked,
     "/disk":      lambda c, a: cmd_disk(c),
     "/uptime":    lambda c, a: cmd_uptime(c),
     "/services":  lambda c, a: cmd_services(c),

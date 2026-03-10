@@ -167,11 +167,27 @@ class TestCmdServices:
 class TestCmdBlocked:
     def test_displays_ban_info(self, commander):
         commander._mock_getoutput.side_effect = [
-            "DROP  all  -- 1.2.3.4  0.0.0.0/0",  # iptables
-            "2026/03/09 Banned 1.2.3.4 (Rule 5710)",  # ban log
+            "DROP  all  -- 1.2.3.4  0.0.0.0/0",  # iptables page
+            "5",                                    # total count
+            "2026/03/09 Banned 1.2.3.4 (Rule 5710)",  # ban log page
         ]
         commander.cmd_blocked("123")
         assert commander._mock_post.call_count == 2
+
+    def test_ip_lookup(self, commander):
+        commander._mock_getoutput.side_effect = [
+            "DROP  all  -- 1.2.3.4  0.0.0.0/0",      # iptables grep
+            "2026/03/09 Banned 1.2.3.4 (Rule 5710)",  # history grep
+        ]
+        commander.cmd_blocked("123", "1.2.3.4")
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "Lookup" in text
+        assert "1.2.3.4" in text
+
+    def test_invalid_ip_rejected(self, commander):
+        commander.cmd_blocked("123", "not-an-ip")
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "Invalid IP" in text
 
 
 class TestCmdStatus:
