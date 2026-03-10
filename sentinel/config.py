@@ -73,6 +73,32 @@ _DEFAULTS = {
             "max_local_ratio": 0.85,
         },
     },
+    "wazuh": {
+        "unexpected_port_level": 12,
+        "expected_port_rule_level": 3,
+        "port_whitelist": {
+            "masterserver": [
+                {"port": 22, "proto": "tcp", "service": "SSH"},
+                {"port": 80, "proto": "tcp", "service": "HTTP"},
+                {"port": 443, "proto": "tcp", "service": "HTTPS"},
+                {"port": 55000, "proto": "tcp", "service": "Wazuh API"},
+                {"port": 9200, "proto": "tcp", "service": "OpenSearch"},
+                {"port": 9300, "proto": "tcp", "service": "OpenSearch transport"},
+                {"port": 3001, "proto": "tcp", "service": "Uptime Kuma"},
+                {"port": 1514, "proto": "tcp", "service": "Wazuh agent"},
+                {"port": 1515, "proto": "tcp", "service": "Wazuh enrollment"},
+            ],
+            "minibolt": [
+                {"port": 22, "proto": "tcp", "service": "SSH"},
+                {"port": 8080, "proto": "tcp", "service": "LND REST"},
+                {"port": 4081, "proto": "tcp", "service": "mempool"},
+                {"port": 9735, "proto": "tcp", "service": "LND P2P"},
+                {"port": 18333, "proto": "tcp", "service": "Bitcoin testnet RPC"},
+                {"port": 18334, "proto": "tcp", "service": "Bitcoin testnet P2P"},
+                {"port": 3002, "proto": "tcp", "service": "Uptime Kuma"},
+            ],
+        },
+    },
 }
 
 _raw_config: dict | None = None

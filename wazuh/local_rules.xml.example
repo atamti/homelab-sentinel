@@ -1,0 +1,96 @@
+<!--
+  homelab-sentinel companion rules
+  =================================
+  Add these to your existing /var/ossec/etc/rules/local_rules.xml
+  Do not deploy this file wholesale — merge selectively.
+
+  Rule ID range used: 100100–100299
+  If these conflict with your existing custom rules, adjust the IDs
+  and update the wazuh.port_whitelist section in homelab-sentinel.yaml
+  accordingly.
+
+  Validate after merging:
+    sudo /var/ossec/bin/wazuh-logtest
+    sudo systemctl restart wazuh-manager
+    sudo grep "Error" /var/ossec/logs/ossec.log
+-->
+
+<group name="local,syscheck,">
+
+  <!-- ══════════════════════════════════════════════════════════════
+       RULE 533 — LISTENED PORT CHANGES
+
+       Default behavior: Rule 533 fires at Level 7 on any port change.
+       Goal: Reduce expected port changes below notification threshold,
+       escalate unexpected changes to Level 12 for critical alerting
+       and optional active response.
+
+       Customize:
+         - Add <hostname> + <match> blocks for your expected ports
+         - Adjust level on 100100/100110 if you want expected changes
+           silent (level 3) or just quieter (level 5)
+         - Rule 100200 catches anything not whitelisted — leave at 12
+       ══════════════════════════════════════════════════════════════ -->
+
+  <!-- ── masterserver expected ports ─────────────────────────────── -->
+  <!--
+    Ports:
+      22    — SSH
+      80    — HTTP (redirect to HTTPS)
+      443   — HTTPS reverse proxy
+      55000 — Wazuh Manager API
+      9200  — OpenSearch (Wazuh indexer)
+      9300  — OpenSearch cluster transport
+      3001  — Uptime Kuma dashboard
+      1514  — Wazuh agent communication (TCP)
+      1515  — Wazuh agent enrollment
+  -->
+  <rule id="100100" level="3">
+    <if_sid>533</if_sid>
+    <hostname>masterserver</hostname>
+    <match>22|80|443|55000|9200|9300|3001|1514|1515</match>
+    <description>Expected port change on masterserver — whitelisted</description>
+  </rule>
+
+  <!-- ── minibolt expected ports ─────────────────────────────────── -->
+  <!--
+    Ports:
+      22    — SSH
+      8080  — LND REST API
+      4081  — mempool web UI
+      9735  — LND P2P (Lightning Network)
+      18333 — Bitcoin testnet RPC (if applicable)
+      18334 — Bitcoin testnet P2P (if applicable)
+      3002  — Uptime Kuma (if running secondary instance)
+  -->
+  <rule id="100110" level="3">
+    <if_sid>533</if_sid>
+    <hostname>minibolt</hostname>
+    <match>22|8080|4081|9735|18333|18334|3002</match>
+    <description>Expected port change on minibolt — whitelisted</description>
+  </rule>
+
+  <!-- ── Generic / any agent — common expected ports ─────────────── -->
+  <!--
+    Ports:
+      22 — SSH (expected on every host)
+      53 — DNS resolver (expected on every host)
+  -->
+  <rule id="100120" level="3">
+    <if_sid>533</if_sid>
+    <match>22|53</match>
+    <description>Expected port change (SSH/DNS) — whitelisted</description>
+  </rule>
+
+  <!-- ── Catch-all: unexpected port changes ──────────────────────── -->
+  <!--
+    Any port change not matched by the rules above lands here.
+    Level 12 ensures it arrives in the critical alert channel and
+    can trigger active response if configured.
+  -->
+  <rule id="100200" level="12">
+    <if_sid>533</if_sid>
+    <description>Unexpected port change — not in whitelist</description>
+  </rule>
+
+</group>

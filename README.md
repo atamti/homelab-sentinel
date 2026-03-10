@@ -86,6 +86,16 @@ cd homelab-sentinel
 ./deploy.sh user@host
 ```
 
+## Wazuh Configuration
+
+homelab-sentinel depends on Wazuh being configured with the correct rules and active response entries. The [`wazuh/`](wazuh/README.md) directory contains reference configurations:
+
+- **`local_rules.xml.example`** — per-agent port change whitelisting and escalation rules
+- **`ossec-active-response.xml.example`** — command definitions, active response rules with timeout rationale, and IP whitelist
+- **`generate_rules.py`** — generates port whitelist rules from `homelab-sentinel.yaml` so you can maintain ports in YAML and produce merge-ready XML
+
+These are reference files — merge them selectively into your existing Wazuh config. See [`wazuh/README.md`](wazuh/README.md) for details.
+
 The deploy script will:
 - Copy `sentinel/` shared library to `/var/ossec/integrations/sentinel/`
 - Copy scripts to their Wazuh destinations

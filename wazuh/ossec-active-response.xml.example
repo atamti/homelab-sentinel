@@ -1,0 +1,149 @@
+<!--
+  homelab-sentinel — Active Response Configuration
+  ==================================================
+  These blocks belong inside <ossec_config> in /var/ossec/etc/ossec.conf.
+  Do not deploy this file wholesale — merge selectively.
+
+  notify-ban.py wraps the built-in firewall-drop: it calls firewall-drop
+  internally via the two-phase stdin/stdout handshake, then sends a
+  Telegram notification and writes to the ban history log.
+
+  After merging, restart:
+    sudo systemctl restart wazuh-manager
+-->
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     COMMAND DEFINITION
+     ═══════════════════════════════════════════════════════════════════════
+
+     Defines the command name used by <active-response> blocks below.
+     The executable must be deployed at:
+       /var/ossec/active-response/bin/notify-ban.py
+
+     timeout_allowed=yes lets Wazuh send the "delete" phase after the
+     timeout expires, which removes the iptables DROP rule automatically.
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+<command>
+  <name>firewall-notify-drop</name>
+  <executable>notify-ban.py</executable>
+  <timeout_allowed>yes</timeout_allowed>
+</command>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     ACTIVE RESPONSE RULES
+     ═══════════════════════════════════════════════════════════════════════
+
+     Each block ties a rule trigger to the firewall-notify-drop command.
+
+     Timeout values (in seconds) control how long the IP stays banned:
+       600   = 10 minutes — low-confidence triggers (single failed login)
+       1800  = 30 minutes — brute-force patterns
+       3600  = 1 hour     — web attacks, exploit attempts
+
+     Shorter timeouts reduce collateral damage from false positives.
+     Longer timeouts for web attacks because scanners tend to rotate
+     and return; a 10-minute ban is too short to be effective.
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+<!-- SSH brute force (rule 5763)
+     Fires after multiple failed SSH login attempts in a short window.
+     30-minute ban — long enough to stop the scanner, short enough to
+     recover if a legitimate user fat-fingers their password. -->
+<active-response>
+  <command>firewall-notify-drop</command>
+  <location>local</location>
+  <rules_id>5763</rules_id>
+  <timeout>1800</timeout>
+</active-response>
+
+<!-- Repeated SSH authentication failures (rules 5710, 5711)
+     5710 = failed password for valid user
+     5711 = failed password for invalid user
+     10-minute ban — lighter touch since these fire on fewer attempts
+     than the brute-force rule. -->
+<active-response>
+  <command>firewall-notify-drop</command>
+  <location>local</location>
+  <rules_id>5710,5711</rules_id>
+  <timeout>600</timeout>
+</active-response>
+
+<!-- Web attacks / SQL injection / common exploits (rules 31151, 31153, 31164)
+     31151 = multiple web authentication failures
+     31153 = SQL injection attempt
+     31164 = common web attack pattern
+     1-hour ban — web scanners are persistent and will retry quickly;
+     a longer ban is more effective. -->
+<active-response>
+  <command>firewall-notify-drop</command>
+  <location>local</location>
+  <rules_id>31151,31153,31164</rules_id>
+  <timeout>3600</timeout>
+</active-response>
+
+<!-- Rootkit detection (rule 510)
+     Fires when rootcheck finds suspicious files or processes.
+     1-hour ban — rootkit activity is high severity; longer ban gives
+     time to investigate before the IP can retry. -->
+<active-response>
+  <command>firewall-notify-drop</command>
+  <location>local</location>
+  <rules_id>510</rules_id>
+  <timeout>3600</timeout>
+</active-response>
+
+<!-- Level 12 safety net — unexpected port changes and other high-severity
+     Any rule that reaches Level 12 and isn't matched above triggers here.
+     This catches the unexpected port change rule (100200) and any future
+     high-severity rules you add.
+     1-hour ban as a conservative default. -->
+<active-response>
+  <command>firewall-notify-drop</command>
+  <location>local</location>
+  <level>12</level>
+  <timeout>3600</timeout>
+</active-response>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     IP WHITELIST
+     ═══════════════════════════════════════════════════════════════════════
+
+     IPs listed here are NEVER banned by active response, even if they
+     trigger a matching rule. Use this for:
+       - Your own public IP / VPN exit
+       - Internal monitoring hosts
+       - Jump boxes / bastion hosts
+
+     Add entries inside <ossec_config> at the top level (not inside
+     <active-response>).
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+<global>
+  <white_list>127.0.0.1</white_list>
+  <white_list>^localhost.localdomain$</white_list>
+  <!-- Add your trusted IPs below -->
+  <!-- <white_list>203.0.113.10</white_list> -->
+</global>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     INTEGRATION — Telegram alert forwarding
+     ═══════════════════════════════════════════════════════════════════════
+
+     Forwards all Level 7+ alerts to the custom-telegram integration.
+     custom-telegram routes: everything to full-log channel, Level 10+
+     to the critical channel (excluding silent rules).
+
+     The integration script reads BOT_TOKEN and chat IDs from env vars
+     loaded via /etc/homelab-sentinel.env.
+     ═══════════════════════════════════════════════════════════════════════ -->
+
+<integration>
+  <name>custom-telegram</name>
+  <alert_format>json</alert_format>
+  <level>7</level>
+</integration>
