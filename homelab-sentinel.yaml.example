@@ -1,0 +1,30 @@
+# homelab-sentinel.yaml — sanitization and runtime configuration
+#
+# Searched at:
+#   /etc/homelab-sentinel.yaml        (production)
+#   <repo>/homelab-sentinel.yaml      (development)
+
+sanitization:
+  # Master toggle — set to false to disable all scrubbing
+  enabled: true
+
+  # Dry-run mode — logs what would be scrubbed without replacing.
+  # Useful for tuning during initial setup.
+  dry_run: false
+
+  # Internal hostnames to replace with [host] in output
+  internal_hostnames:
+    - "masterserver"
+    - "minibolt"
+    # - "agentbox"
+
+  # Replace RFC1918 addresses (10.x, 172.16-31.x, 192.168.x) with [internal]
+  # Attacker IPs (public) are never scrubbed
+  scrub_internal_ips: true
+
+  # Shorten long filesystem paths (3+ segments) to /.../filename
+  scrub_paths: true
+
+  # Arbitrary string replacements (case-insensitive)
+  custom_replacements:
+    # "dockerdaemon": "[service-user]"

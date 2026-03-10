@@ -37,6 +37,7 @@ from sentinel import telegram, wazuh
 from sentinel.config import require_env, env
 from sentinel.telegram import esc
 from sentinel.validate import validated_ip, validated_port
+from sentinel.sanitize import sanitize, summarize_docker_output
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -85,8 +86,8 @@ def log(msg: str) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def send_message(chat_id: str, text: str) -> None:
-    """Send a Telegram message, chunking if over 4000 chars."""
-    telegram.send(BOT_TOKEN, chat_id, text)
+    """Send a Telegram message, sanitizing and chunking if needed."""
+    telegram.send(BOT_TOKEN, chat_id, sanitize(text))
 
 
 # ── Wazuh token cache ────────────────────────────────────────────────────────
@@ -481,9 +482,10 @@ def cmd_uptime(chat_id: str) -> None:
 def cmd_services(chat_id: str) -> None:
     result = subprocess.getoutput(
         "DOCKER_HOST=unix:///run/user/1001/docker.sock "
-        "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>&1"
+        "docker ps -a --format 'table {{.Names}}\t{{.Status}}' 2>&1"
     )
-    send_message(chat_id, f"<b>Docker Services</b>\n\n<pre>{result or 'No output'}</pre>")
+    summary = summarize_docker_output(result)
+    send_message(chat_id, f"<b>Docker Services</b>\n\n{summary}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

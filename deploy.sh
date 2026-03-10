@@ -45,6 +45,8 @@ SERVICE_FILE="homelab-sentinel.service"
 SERVICE_DEST="/etc/systemd/system/${SERVICE_FILE}"
 ENV_EXAMPLE=".env.example"
 ENV_DEST="/etc/homelab-sentinel.env"
+YAML_EXAMPLE="homelab-sentinel.yaml.example"
+YAML_DEST="/etc/homelab-sentinel.yaml"
 
 SERVICES_TO_RESTART=("homelab-sentinel")
 
@@ -174,6 +176,20 @@ if [[ "$env_exists" != "yes" ]]; then
     run_cmd "sudo chmod 600 ${ENV_DEST}"
 else
     info "${ENV_DEST} already exists — not overwriting"
+fi
+
+# ── Seed YAML config if missing ─────────────────────────────────────────────
+
+info "Checking for ${YAML_DEST}"
+yaml_exists=$(run_cmd "test -f ${YAML_DEST} && echo yes || echo no" 2>/dev/null || echo "no")
+
+if [[ "$yaml_exists" != "yes" ]]; then
+    warn "${YAML_DEST} not found — seeding from ${YAML_EXAMPLE}"
+    warn "Edit this file to enable output sanitization"
+    copy_file "${SCRIPT_DIR}/${YAML_EXAMPLE}" "${YAML_DEST}"
+    run_cmd "sudo chmod 600 ${YAML_DEST}"
+else
+    info "${YAML_DEST} already exists — not overwriting"
 fi
 
 # ── Restart services ─────────────────────────────────────────────────────────
