@@ -192,6 +192,46 @@ else
     info "${YAML_DEST} already exists — not overwriting"
 fi
 
+# ── Drop latest example files + check for new keys ──────────────────────────
+
+info "Updating example files alongside live configs"
+copy_file "${SCRIPT_DIR}/${ENV_EXAMPLE}" "${ENV_DEST}.example"
+run_cmd "sudo chmod 644 ${ENV_DEST}.example"
+copy_file "${SCRIPT_DIR}/${YAML_EXAMPLE}" "${YAML_DEST}.example"
+run_cmd "sudo chmod 644 ${YAML_DEST}.example"
+
+# Compare env keys (variable names before '=')
+if [[ "$DRY_RUN" != true && "$env_exists" == "yes" ]]; then
+    new_env_keys=$(
+        run_cmd "comm -23 \
+            <(grep -oP '^[A-Z_]+(?==)' ${ENV_DEST}.example | sort) \
+            <(grep -oP '^[A-Z_]+(?==)' ${ENV_DEST} | sort)" 2>/dev/null || true
+    )
+    if [[ -n "$new_env_keys" ]]; then
+        warn "New env keys available in ${ENV_DEST}.example:"
+        while IFS= read -r key; do
+            warn "  $key"
+        done <<< "$new_env_keys"
+        warn "Review: diff ${ENV_DEST} ${ENV_DEST}.example"
+    fi
+fi
+
+# Compare YAML top-level keys
+if [[ "$DRY_RUN" != true && "$yaml_exists" == "yes" ]]; then
+    new_yaml_keys=$(
+        run_cmd "comm -23 \
+            <(grep -oP '^[a-z_]+(?=:)' ${YAML_DEST}.example | sort) \
+            <(grep -oP '^[a-z_]+(?=:)' ${YAML_DEST} | sort)" 2>/dev/null || true
+    )
+    if [[ -n "$new_yaml_keys" ]]; then
+        warn "New YAML sections available in ${YAML_DEST}.example:"
+        while IFS= read -r key; do
+            warn "  $key"
+        done <<< "$new_yaml_keys"
+        warn "Review: diff ${YAML_DEST} ${YAML_DEST}.example"
+    fi
+fi
+
 # ── Restart services ─────────────────────────────────────────────────────────
 
 echo ""

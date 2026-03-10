@@ -280,10 +280,12 @@ def verify_totp(code: str) -> bool:
 def require_totp(chat_id: str, arg: str) -> tuple[str | None, bool]:
     parts = arg.rsplit(" ", 1)
     if len(parts) < 2:
+        log(f"totp: missing code (chat_id={chat_id})")
         send_message(chat_id, "⛔ TOTP required. Usage: /command [args] [totp]")
         return None, False
     actual_arg, code = parts[0], parts[1]
     if not verify_totp(code):
+        log(f"totp: invalid code (chat_id={chat_id})")
         send_message(chat_id, "⛔ Invalid or expired TOTP code")
         return None, False
     return actual_arg, True
@@ -292,9 +294,11 @@ def require_totp(chat_id: str, arg: str) -> tuple[str | None, bool]:
 def require_totp_only(chat_id: str, arg: str) -> bool:
     code = arg.strip()
     if not code:
+        log(f"totp: missing code (chat_id={chat_id})")
         send_message(chat_id, "⛔ TOTP required. Usage: /command [totp]")
         return False
     if not verify_totp(code):
+        log(f"totp: invalid code (chat_id={chat_id})")
         send_message(chat_id, "⛔ Invalid or expired TOTP code")
         return False
     return True
@@ -822,6 +826,7 @@ def process_update(update: dict) -> None:
     text    = message.get("text", "").strip()
 
     if user_id != AUTHORIZED_USER:
+        log(f"auth: unauthorized access attempt from user_id={user_id}")
         send_message(chat_id, "Unauthorized")
         return
 
