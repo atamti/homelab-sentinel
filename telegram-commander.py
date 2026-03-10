@@ -175,7 +175,9 @@ def lnd_get(endpoint: str) -> dict:
 def mempool_get(endpoint: str, public: bool = False) -> dict | str:
     try:
         base = "https://mempool.space" if public else MINIBOLT_MEMPOOL
-        r    = requests.get(f"{base}{endpoint}", timeout=10)
+        # Skip SSL verification for local mempool (self-signed cert)
+        r    = requests.get(f"{base}{endpoint}", timeout=10,
+                            verify=public)
         try:
             return r.json()
         except Exception:
