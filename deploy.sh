@@ -5,6 +5,8 @@
 #   ./deploy.sh                    # deploy to localhost (run on the server itself)
 #   ./deploy.sh user@host          # deploy to a remote server via SSH
 #   ./deploy.sh --dry-run [target] # show what would happen without doing it
+#   ./deploy.sh --overwrite-yaml   # overwrite existing YAML config
+#   ./deploy.sh --overwrite-env    # overwrite existing .env file
 #
 # Prerequisites on the target:
 #   - Wazuh agent/manager installed at /var/ossec/
@@ -53,12 +55,16 @@ SERVICES_TO_RESTART=("homelab-sentinel")
 # ── Parse arguments ──────────────────────────────────────────────────────────
 
 DRY_RUN=false
+OVERWRITE_YAML=false
+OVERWRITE_ENV=false
 TARGET=""
 
 for arg in "$@"; do
     case "$arg" in
-        --dry-run) DRY_RUN=true ;;
-        *)         TARGET="$arg" ;;
+        --dry-run)        DRY_RUN=true ;;
+        --overwrite-yaml) OVERWRITE_YAML=true ;;
+        --overwrite-env)  OVERWRITE_ENV=true ;;
+        *)                TARGET="$arg" ;;
     esac
 done
 
@@ -72,6 +78,13 @@ NC='\033[0m'
 info()  { echo -e "${GREEN}[+]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
 error() { echo -e "${RED}[✗]${NC} $*" >&2; }
+
+confirm() {
+    local msg="$1"
+    warn "$msg"
+    read -rp "  Continue? [y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]]
+}
 
 run_cmd() {
     if [[ "$DRY_RUN" == true ]]; then
@@ -176,6 +189,15 @@ if [[ "$env_exists" != "yes" ]]; then
     copy_file "${SCRIPT_DIR}/${ENV_EXAMPLE}" "${ENV_DEST}"
     run_cmd "sudo chown root:wazuh ${ENV_DEST}"
     run_cmd "sudo chmod 640 ${ENV_DEST}"
+elif [[ "$OVERWRITE_ENV" == true ]]; then
+    if confirm "${ENV_DEST} exists and will be OVERWRITTEN with ${ENV_EXAMPLE}"; then
+        copy_file "${SCRIPT_DIR}/${ENV_EXAMPLE}" "${ENV_DEST}"
+        run_cmd "sudo chown root:wazuh ${ENV_DEST}"
+        run_cmd "sudo chmod 640 ${ENV_DEST}"
+        warn "${ENV_DEST} overwritten — edit with real values!"
+    else
+        info "Skipped overwriting ${ENV_DEST}"
+    fi
 else
     info "${ENV_DEST} already exists — not overwriting"
     # Ensure correct ownership for Wazuh integration scripts
@@ -193,6 +215,14 @@ if [[ "$yaml_exists" != "yes" ]]; then
     warn "Edit this file to enable output sanitization"
     copy_file "${SCRIPT_DIR}/${YAML_EXAMPLE}" "${YAML_DEST}"
     run_cmd "sudo chmod 600 ${YAML_DEST}"
+elif [[ "$OVERWRITE_YAML" == true ]]; then
+    if confirm "${YAML_DEST} exists and will be OVERWRITTEN with ${YAML_EXAMPLE}"; then
+        copy_file "${SCRIPT_DIR}/${YAML_EXAMPLE}" "${YAML_DEST}"
+        run_cmd "sudo chmod 600 ${YAML_DEST}"
+        warn "${YAML_DEST} overwritten — review and adjust settings!"
+    else
+        info "Skipped overwriting ${YAML_DEST}"
+    fi
 else
     info "${YAML_DEST} already exists — not overwriting"
 fi

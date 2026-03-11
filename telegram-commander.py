@@ -683,7 +683,7 @@ def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
             rags.append(temp_rag)
 
         all_green = all(r == "\U0001f7e2" for r in rags)
-        hdr = "<b>\U0001f5a5 \U0001f7e2 System</b>" if all_green else "<b>\U0001f5a5 System</b>"
+        hdr = "<b>\U0001f5a5  System \U0001f7e2</b>" if all_green else "<b>System \U0001f5a5</b>"
         lines.append(hdr)
         lines.append(f"Uptime: {esc(stats['uptime'])}")
         if all_green:
