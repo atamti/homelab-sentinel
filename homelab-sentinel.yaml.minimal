@@ -16,5 +16,5 @@
 #     rest_url: "https://minibolt.local:8080"
 
 # sanitization:
-#   internal_hostnames:
-#     - "masterserver"
+#   hostnames:
+#     masterserver: sentinel

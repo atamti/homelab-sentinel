@@ -73,16 +73,24 @@ _PATH_RE = re.compile(r"(?:/[\w.@-]+){3,}")
 
 
 def scrub_hostnames(text: str) -> tuple[str, int]:
-    """Replace internal hostnames with generic labels.
+    """Replace hostnames based on the hostnames config dict.
+
+    - Key with null/empty value → redacted to [host]
+    - Key with string value → replaced with that value
+
     Returns (scrubbed_text, replacement_count)."""
     cfg = _san_config()
-    hostnames = cfg.get("internal_hostnames") or []
+    hostnames = cfg.get("hostnames") or cfg.get("internal_hostnames") or {}
+    # Backward compat: accept old list format as all-redacted
+    if isinstance(hostnames, list):
+        hostnames = {h: None for h in hostnames}
     count = 0
-    for hostname in hostnames:
+    for hostname, display in hostnames.items():
         if not hostname:
             continue
+        replacement = str(display) if display else "[host]"
         pattern = re.compile(re.escape(hostname), re.IGNORECASE)
-        text, n = _replace_outside_tags(text, pattern, "[host]")
+        text, n = _replace_outside_tags(text, pattern, replacement)
         count += n
     return text, count
 

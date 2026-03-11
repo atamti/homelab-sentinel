@@ -103,10 +103,13 @@ sanitization:
   enabled: true
   # Dry-run mode — logs what would be scrubbed without replacing
   dry_run: false
-  # Internal hostnames to replace with [host] in output
-  internal_hostnames:
-    - "masterserver"
-    - "minibolt"
+  # Hostname handling — keys are hostnames the sanitizer looks for.
+  # null/omitted value → redacted to [host]
+  # string value → replaced with that codename (use hostname itself to show bare)
+  hostnames:
+    masterserver: sentinel
+    minibolt: node
+    # secretbox:              # ← null value = redacted to [host]
   # Replace RFC1918 addresses with [internal]
   scrub_internal_ips: true
   # Shorten long filesystem paths to /.../filename

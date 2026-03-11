@@ -34,21 +34,28 @@ def _patch_config(tmp_path, cfg: dict):
 
 
 class TestScrubHostnames:
-    def test_replaces_configured_hostnames(self, tmp_path):
-        cfg = {"sanitization": {"internal_hostnames": ["masterserver", "minibolt"]}}
+    def test_redacts_null_value_hostnames(self, tmp_path):
+        cfg = {"sanitization": {"hostnames": {"masterserver": None, "minibolt": None}}}
         with _patch_config(tmp_path, cfg):
             result, count = sanitize.scrub_hostnames("Agent: masterserver | Target: minibolt")
         assert result == "Agent: [host] | Target: [host]"
         assert count == 2
 
+    def test_codename_replacement(self, tmp_path):
+        cfg = {"sanitization": {"hostnames": {"masterserver": "sentinel", "minibolt": "node"}}}
+        with _patch_config(tmp_path, cfg):
+            result, count = sanitize.scrub_hostnames("Agent: masterserver | Target: minibolt")
+        assert result == "Agent: sentinel | Target: node"
+        assert count == 2
+
     def test_case_insensitive(self, tmp_path):
-        cfg = {"sanitization": {"internal_hostnames": ["MasterServer"]}}
+        cfg = {"sanitization": {"hostnames": {"MasterServer": None}}}
         with _patch_config(tmp_path, cfg):
             result, _ = sanitize.scrub_hostnames("host is MASTERSERVER")
         assert "[host]" in result
 
     def test_preserves_html_tags(self, tmp_path):
-        cfg = {"sanitization": {"internal_hostnames": ["myhost"]}}
+        cfg = {"sanitization": {"hostnames": {"myhost": None}}}
         with _patch_config(tmp_path, cfg):
             result, _ = sanitize.scrub_hostnames("<b>Agent:</b> myhost is up")
         assert "<b>Agent:</b>" in result
@@ -186,7 +193,7 @@ class TestSummarizeDockerOutput:
 
 class TestSanitize:
     def test_disabled_returns_unchanged(self, tmp_path):
-        cfg = {"sanitization": {"enabled": False, "internal_hostnames": ["myhost"]}}
+        cfg = {"sanitization": {"enabled": False, "hostnames": {"myhost": None}}}
         with _patch_config(tmp_path, cfg):
             result = sanitize.sanitize("myhost is up on 10.0.0.1")
         assert "myhost" in result
@@ -196,7 +203,7 @@ class TestSanitize:
         cfg = {
             "sanitization": {
                 "enabled": True,
-                "internal_hostnames": ["masterserver"],
+                "hostnames": {"masterserver": None},
                 "scrub_internal_ips": True,
                 "scrub_paths": True,
             }
@@ -209,12 +216,24 @@ class TestSanitize:
         assert "[internal]" in result
         assert "/.../test.log" in result
 
+    def test_codename_in_full_sanitize(self, tmp_path):
+        cfg = {
+            "sanitization": {
+                "enabled": True,
+                "hostnames": {"masterserver": "sentinel"},
+            }
+        }
+        with _patch_config(tmp_path, cfg):
+            result = sanitize.sanitize("Agent: masterserver is up")
+        assert "masterserver" not in result
+        assert "sentinel" in result
+
     def test_dry_run_returns_original(self, tmp_path):
         cfg = {
             "sanitization": {
                 "enabled": True,
                 "dry_run": True,
-                "internal_hostnames": ["myhost"],
+                "hostnames": {"myhost": None},
             }
         }
         with _patch_config(tmp_path, cfg):
@@ -225,7 +244,7 @@ class TestSanitize:
         cfg = {
             "sanitization": {
                 "enabled": True,
-                "internal_hostnames": ["masterserver"],
+                "hostnames": {"masterserver": None},
                 "scrub_internal_ips": True,
             }
         }
@@ -235,6 +254,22 @@ class TestSanitize:
         assert "L8" in result
         assert "45.33.22.11" in result
         assert "masterserver" not in result
+
+    def test_backward_compat_list_format(self, tmp_path):
+        """Old list format under hostnames key still works."""
+        cfg = {"sanitization": {"enabled": True, "hostnames": ["masterserver"]}}
+        with _patch_config(tmp_path, cfg):
+            result = sanitize.sanitize("Agent: masterserver")
+        assert "masterserver" not in result
+        assert "[host]" in result
+
+    def test_backward_compat_internal_hostnames_key(self, tmp_path):
+        """Old internal_hostnames key still works."""
+        cfg = {"sanitization": {"enabled": True, "internal_hostnames": ["masterserver"]}}
+        with _patch_config(tmp_path, cfg):
+            result = sanitize.sanitize("Agent: masterserver")
+        assert "masterserver" not in result
+        assert "[host]" in result
 
     def test_no_config_file_returns_unchanged(self):
         # With no config file at all, sanitize is disabled by default
