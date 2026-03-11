@@ -91,7 +91,7 @@ class TestMainAdd:
             patch.object(notify_ban, "is_duplicate", return_value=False),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
-            mock_stdin.read.return_value = payload
+            mock_stdin.readline.return_value = payload
             notify_ban.main()
 
         # Should have sent at least one Telegram message (full log)
@@ -107,7 +107,7 @@ class TestMainAdd:
             patch.object(notify_ban, "is_duplicate", return_value=False),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
-            mock_stdin.read.return_value = payload
+            mock_stdin.readline.return_value = payload
             notify_ban.main()
 
         # 5710 is in SILENT_RULES -> only 1 message (full log), not 2
@@ -121,7 +121,7 @@ class TestMainAdd:
             patch.object(notify_ban, "is_duplicate", return_value=False),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
-            mock_stdin.read.return_value = payload
+            mock_stdin.readline.return_value = payload
             notify_ban.main()
 
         # Non-silent -> 2 messages: full log + critical
@@ -135,7 +135,7 @@ class TestMainAdd:
             patch.object(notify_ban, "is_duplicate", return_value=True),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
-            mock_stdin.read.return_value = payload
+            mock_stdin.readline.return_value = payload
             notify_ban.main()
 
         # Duplicate -> no Telegram calls
@@ -149,7 +149,7 @@ class TestMainDelete:
             patch("sys.stdin") as mock_stdin,
             patch.object(notify_ban, "unban_ip") as mock_unban,
         ):
-            mock_stdin.read.return_value = payload
+            mock_stdin.readline.return_value = payload
             notify_ban.main()
 
         mock_unban.assert_called_once_with("9.9.9.9")
@@ -163,7 +163,7 @@ class TestMainDelete:
             patch("sys.stdin") as mock_stdin,
             patch.object(notify_ban, "unban_ip"),
         ):
-            mock_stdin.read.return_value = payload
+            mock_stdin.readline.return_value = payload
             notify_ban.main()
 
         with open(notify_ban._ban_log) as f:
@@ -176,7 +176,7 @@ class TestMainDelete:
             patch("sys.stdin") as mock_stdin,
             patch.object(notify_ban, "unban_ip", return_value=True) as mock_unban,
         ):
-            mock_stdin.read.return_value = payload
+            mock_stdin.readline.return_value = payload
             notify_ban.main()
 
         mock_unban.assert_called_once_with("9.9.9.9")
@@ -191,7 +191,7 @@ class TestMainEdgeCases:
             }
         )
         with patch("sys.stdin") as mock_stdin:
-            mock_stdin.read.return_value = payload
+            mock_stdin.readline.return_value = payload
             with pytest.raises(SystemExit):
                 notify_ban.main()
 
@@ -204,7 +204,7 @@ class TestMainEdgeCases:
             patch.object(notify_ban, "_notify", side_effect=Exception("sentinel broken")),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
-            mock_stdin.read.return_value = payload
+            mock_stdin.readline.return_value = payload
             # Should NOT raise — the exception in _notify is caught
             notify_ban.main()
 
@@ -220,7 +220,7 @@ class TestMainEdgeCases:
             patch.object(notify_ban, "_notify", side_effect=RuntimeError("yaml broken")),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
-            mock_stdin.read.return_value = payload
+            mock_stdin.readline.return_value = payload
             notify_ban.main()
 
         with open(notify_ban.AR_ERROR_LOG) as f:
@@ -262,7 +262,7 @@ class TestAlreadyBannedSkipsBan:
             patch.object(notify_ban, "is_duplicate", return_value=False),
             patch.object(notify_ban, "is_already_banned", return_value=True),
         ):
-            mock_stdin.read.return_value = payload
+            mock_stdin.readline.return_value = payload
             notify_ban.main()
 
         # ban_ip should NOT have been called
@@ -278,7 +278,7 @@ class TestAlreadyBannedSkipsBan:
             patch.object(notify_ban, "is_duplicate", return_value=False),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
-            mock_stdin.read.return_value = payload
+            mock_stdin.readline.return_value = payload
             notify_ban.main()
 
         mock_ban.assert_called_once()
@@ -321,6 +321,6 @@ class TestDeduplicateIptables:
 
     def test_bad_json_exits(self, notify_ban):
         with patch("sys.stdin") as mock_stdin:
-            mock_stdin.read.return_value = "NOT JSON"
+            mock_stdin.readline.return_value = "NOT JSON"
             with pytest.raises(SystemExit):
                 notify_ban.main()

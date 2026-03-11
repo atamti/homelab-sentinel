@@ -223,7 +223,7 @@ def _validate_ip(ip: str) -> str | None:
 def main() -> None:
     # ── Phase 1: Read stdin (fatal if this fails — nothing to do) ────
     try:
-        raw = sys.stdin.read()
+        raw = sys.stdin.readline()
         debug_log(f"stdin: {raw[:500]}")
         data = json.loads(raw)
     except Exception as e:
