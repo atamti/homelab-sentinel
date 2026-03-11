@@ -160,10 +160,10 @@ def score_channel_health(channels: list) -> tuple[str, str]:
         if capacity > 0:
             ratio = local / capacity
             if ratio < min_ratio or ratio > max_ratio:
-                imbalanced.append(round(ratio * 100))
+                imbalanced.append(f"{round(ratio * 100)}% local")
 
     if imbalanced:
-        pcts = ", ".join(f"{p}%" for p in imbalanced)
+        pcts = ", ".join(imbalanced)
         return "\U0001f7e1", f"{len(imbalanced)}/{total} need rebalancing ({pcts})"
 
     return "\U0001f7e2", f"{total} channel{'s' if total != 1 else ''} healthy"
@@ -384,10 +384,216 @@ def require_totp_only(chat_id: str, arg: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _rag(value: float, amber: float, red: float) -> str:
+    """Return 🟢/🟡/🔴 based on value vs thresholds."""
+    if value >= red:
+        return "\U0001f534"
+    if value >= amber:
+        return "\U0001f7e1"
+    return "\U0001f7e2"
+
+
+def _simplify_service_name(name: str) -> str:
+    """Strip common Uptime Kuma prefixes and URL parts for cleaner display."""
+    for prefix in ("HTTP - ", "HTTPS - ", "TCP Port - ", "Ping - ", "Docker Container - ", "DNS - "):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    name = re.sub(r"^https?://", "", name)
+    name = re.sub(r":\d+(/.*)?$", "", name)
+    name = re.sub(r"\.(local|lan|home|internal)$", "", name, flags=re.IGNORECASE)
+    return name
+
+
+def _valid_height(h) -> bool:
+    """Check if a mempool height response is a usable number."""
+    return isinstance(h, (int, float)) or (isinstance(h, str) and h.isdigit())
+
+
+def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
+    log("digest: starting")
+    lines = [f"<b>{title}</b>\n"]
+    cfg = get_cfg()
+
+    # ── System ───────────────────────────────────────────────────────
+    if cfg["digest"]["sections"]["system"]:
+        stats = get_system_stats()
+        th = cfg["digest"]["thresholds"]
+
+        load_amber = th["load_per_core_amber"] * stats["nproc"]
+        load_red = th["load_per_core_red"] * stats["nproc"]
+        load_rag = _rag(stats["load_1m"], load_amber, load_red)
+        mem_rag = _rag(stats["mem_pct"], th["memory_amber"], th["memory_red"])
+        disk_rag = _rag(stats["disk_pct"], th["disk_amber"], th["disk_red"])
+        rags = [load_rag, mem_rag, disk_rag]
+
+        temp_rag = None
+        if stats["cpu_temp"] is not None:
+            temp_rag = _rag(stats["cpu_temp"], th["cpu_temp_amber"], th["cpu_temp_red"])
+            rags.append(temp_rag)
+
+        all_green = all(r == "\U0001f7e2" for r in rags)
+        hdr = "<b>\U0001f5a5  System \U0001f7e2</b>" if all_green else "<b>System \U0001f5a5</b>"
+        lines.append(hdr)
+        lines.append(f"Uptime: {esc(stats['uptime'])}")
+        if all_green:
+            lines.append(f"Load: {esc(stats['load'])}")
+            lines.append(f"Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
+            if temp_rag is not None:
+                lines.append(f"CPU temp: {stats['cpu_temp']:.0f}°C")
+            lines.append(f"Disk: {esc(stats['disk'])}\n")
+        else:
+            lines.append(f"{load_rag} Load: {esc(stats['load'])}")
+            lines.append(f"{mem_rag} Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
+            if temp_rag is not None:
+                lines.append(f"{temp_rag} CPU temp: {stats['cpu_temp']:.0f}°C")
+            lines.append(f"{disk_rag} Disk: {esc(stats['disk'])}\n")
+
+    # ── Agents ───────────────────────────────────────────────────────
+    if cfg["digest"]["sections"]["agents"]:
+        token = get_wazuh_token()
+        agent_data = {}
+        disconnected_ids = []
+        if token:
+            agents = wazuh_get("/agents/summary/status", token)
+            agent_data = agents.get("data", {}).get("connection", {})
+            if agent_data.get("disconnected", 0):
+                disc_resp = wazuh_get("/agents?status=disconnected", token)
+                disconnected_ids = [a.get("id", "?") for a in disc_resp.get("data", {}).get("affected_items", [])]
+
+        active_agents = agent_data.get("active", "?")
+        disconnected = agent_data.get("disconnected", 0)
+        if disconnected:
+            ids = ", ".join(disconnected_ids) if disconnected_ids else str(disconnected)
+            suffix = "s" if disconnected != 1 else ""
+            agent_line = f"\U0001f7e1 Agents: {active_agents} active, {disconnected} disconnected (ID{suffix}: {ids})"
+        else:
+            agent_line = f"\U0001f7e2 Agents: {active_agents} active"
+        lines.append(agent_line + "\n")
+
+    # ── Security ─────────────────────────────────────────────────────
+    if cfg["digest"]["sections"]["security"]:
+        if not cfg["digest"]["sections"]["system"]:
+            stats = get_system_stats()
+        rule_counts = parse_ban_history()
+        total_bans = sum(rule_counts.values())
+        lines.append("<b>\U0001f6e1 Security</b>")
+        lines.append(f"Bans (24h): {total_bans} | Active: {stats['banned']}\n")
+
+        if not cfg["digest"]["sections"]["agents"]:
+            token = get_wazuh_token()
+        if rule_counts and token:
+            all_rids = list(rule_counts.keys())
+            rules_meta = lookup_rules(all_rids, token)
+            sorted_rids = sorted(all_rids, key=lambda rid: -(rules_meta.get(rid, {}).get("level", 0)))[:5]
+            lines.append("<b>Active Response (24h):</b>")
+            for rid in sorted_rids:
+                count = rule_counts[rid]
+                meta = rules_meta.get(rid, {})
+                level = meta.get("level", "?")
+                desc = meta.get("description", "Unknown")
+                lines.append(f"  <b>{esc(str(rid))}</b> (L{level}) \u00d7{count}")
+                lines.append(f"  {esc(str(desc))}")
+
+        # Level 10+ by level descending
+        result = indexer_search(
+            {
+                "size": 0,
+                "query": {
+                    "bool": {
+                        "must": [{"range": {"timestamp": {"gte": "now-24h"}}}, {"range": {"rule.level": {"gte": 10}}}]
+                    }
+                },
+                "aggs": {
+                    "by_level": {
+                        "terms": {"field": "rule.level", "size": 10, "order": {"_key": "desc"}},
+                        "aggs": {"by_rule": {"terms": {"field": "rule.description", "size": 1}}},
+                    }
+                },
+            }
+        )
+        buckets = result.get("aggregations", {}).get("by_level", {}).get("buckets", [])
+
+        if buckets:
+            lines.append("\n<b>Critical Alerts (24h):</b>")
+            for b in buckets:
+                level = b.get("key", "?")
+                count = b.get("doc_count", 0)
+                rule_b = b.get("by_rule", {}).get("buckets", [])
+                desc = rule_b[0].get("key", "Unknown") if rule_b else "Unknown"
+                lines.append(f"  L{level} \u00d7{count}")
+                lines.append(f"  {esc(desc)}")
+        else:
+            lines.append("  No Level 10+ alerts \u2705")
+
+        lines.append("")
+
+    # ── Services ─────────────────────────────────────────────────────
+    if cfg["digest"]["sections"]["services"] and cfg["integrations"]["uptime_kuma"]["enabled"]:
+        up_list, down_list = get_uptime_kuma_status()
+        lines.append("<b>\U0001f4e1 Services</b>")
+        if down_list:
+            names = ", ".join(esc(_simplify_service_name(n)) for n in down_list)
+            lines.append(f"\U0001f534 Down: {names}")
+        else:
+            lines.append(f"\U0001f7e2 All {len(up_list)} services up")
+        lines.append("")
+
+    # ── Bitcoin ──────────────────────────────────────────────────────
+    if cfg["digest"]["sections"]["bitcoin"] and cfg["integrations"]["bitcoin"]["enabled"]:
+        lines.append("<b>\u20bf Bitcoin</b>")
+
+        local_height = mempool_get("/api/blocks/tip/height")
+        public_height = mempool_get("/api/blocks/tip/height", public=True)
+
+        lag_threshold = cfg["digest"]["bitcoin_lag_warning_blocks"]
+        local_ok = _valid_height(local_height)
+        public_ok = _valid_height(public_height)
+
+        if local_ok and public_ok:
+            lag = int(public_height) - int(local_height)
+            if lag > lag_threshold:
+                lines.append(f"\U0001f7e1 Block height: {local_height} (lagging {lag} blocks)")
+            else:
+                lines.append(f"\U0001f7e2 Block height: {local_height}")
+        elif public_ok:
+            lines.append(f"\U0001f7e1 Block height: {public_height} (local node unreachable)")
+        elif local_ok:
+            lines.append(f"\U0001f7e1 Block height: {local_height} (public API unreachable)")
+        else:
+            lines.append("\U0001f534 Block height: unavailable")
+
+        fees = mempool_get("/api/v1/fees/recommended")
+        if isinstance(fees, dict):
+            lines.append(
+                f"Fees: {fees.get('fastestFee')} / "
+                f"{fees.get('halfHourFee')} / "
+                f"{fees.get('hourFee')} sat/vB (fast/30m/1h)"
+            )
+
+        if cfg["integrations"]["lnd"]["enabled"]:
+            lnd_info = lnd_get("/v1/getinfo")
+            if lnd_info:
+                synced = "\U0001f7e2" if lnd_info.get("synced_to_chain") else "\U0001f7e1 not synced"
+                lines.append(f"LND: {synced}")
+            else:
+                lines.append("LND: \U0001f534 unreachable")
+
+            channels = lnd_get("/v1/channels")
+            if channels:
+                ch_list = channels.get("channels", [])
+                if ch_list:
+                    emoji, label = score_channel_health(ch_list)
+                    lines.append(f"Channels: {emoji} {label}")
+
+    send_message(chat_id, "\n".join(lines))
+    log("digest: sent")
+
+
 def cmd_help(chat_id: str) -> None:
     text = f"<b>Homelab Sentinel</b> <i>v{VERSION}</i>\n\n"
+    text += "/status - Full status report\n\n"
     text += "<b>Read-Only:</b>\n"
-    text += "/status - System overview + active response stats\n"
     text += "/event [id] [totp] - Full detail on a specific alert\n"
     text += "/agents - List all agents\n"
     text += "/alerts - Recent high-level alerts (Level 8+)\n"
@@ -395,9 +601,7 @@ def cmd_help(chat_id: str) -> None:
     text += "/blocked [ip|page] - Blocked IPs + ban history\n"
     text += "/disk - Disk usage\n"
     text += "/uptime - System uptime\n"
-    text += "/services - Docker container status\n"
-    text += "/digest - Send daily digest now\n"
-    text += "/status - Status report (same as digest)\n\n"
+    text += "/services - Docker container status\n\n"
     text += "<b>Active Response (TOTP required):</b>\n"
     text += "/block [ip] [totp] - Block an IP\n"
     text += "/unblock [ip] [totp] - Unblock an IP\n"
@@ -409,41 +613,6 @@ def cmd_help(chat_id: str) -> None:
     text += "/syscheck [agent_id] [totp] - Run integrity scan\n"
     text += "/shutdown [totp] - Shutdown server\n\n"
     text += "/help - This menu"
-    send_message(chat_id, text)
-
-
-def cmd_status(chat_id: str) -> None:
-    token = get_wazuh_token()
-    if not token:
-        send_message(chat_id, "Failed to authenticate with Wazuh API")
-        return
-
-    agents = wazuh_get("/agents/summary/status", token)
-    agent_data = agents.get("data", {}).get("connection", {})
-    active = agent_data.get("active", 0)
-    disconnected = agent_data.get("disconnected", 0)
-    total = agent_data.get("total", 0)
-
-    stats = get_system_stats()
-    rule_counts = parse_ban_history()
-
-    rule_table = ""
-    if rule_counts:
-        rule_table = "\n<b>Active Response Events (24h)</b>\n\n"
-        rules_meta = lookup_rules(list(rule_counts.keys()), token)
-        for rid, count in sorted(rule_counts.items(), key=lambda x: -(rules_meta.get(x[0], {}).get("level", 0))):
-            meta = rules_meta.get(rid, {})
-            level = meta.get("level", "?")
-            rule_table += f"<b>{rid}</b> (L{level}) \u00d7{count}\n"
-
-    text = "<b>System Status</b>\n\n"
-    text += f"<b>Uptime:</b> {esc(stats['uptime'])}\n"
-    text += f"<b>Load (1m/5m/15m):</b> {esc(stats['load'])}\n"
-    text += f"<b>Memory:</b> {esc(stats['mem'])}\n"
-    text += f"<b>Disk:</b> {esc(stats['disk'])}\n\n"
-    text += f"<b>Agents:</b> {active} active / {disconnected} disconnected / {total} total\n"
-    text += f"<b>Banned IPs:</b> {esc(stats['banned'])} currently active\n"
-    text += rule_table
     send_message(chat_id, text)
 
 
@@ -627,218 +796,6 @@ def cmd_services(chat_id: str) -> None:
     )
     summary = summarize_docker_output(result)
     send_message(chat_id, f"<b>Docker Services</b>\n\n{summary}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Daily Digest
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-def _rag(value: float, amber: float, red: float) -> str:
-    """Return 🟢/🟡/🔴 based on value vs thresholds."""
-    if value >= red:
-        return "\U0001f534"
-    if value >= amber:
-        return "\U0001f7e1"
-    return "\U0001f7e2"
-
-
-def _simplify_service_name(name: str) -> str:
-    """Strip common Uptime Kuma prefixes and URL parts for cleaner display."""
-    for prefix in ("HTTP - ", "HTTPS - ", "TCP Port - ", "Ping - ", "Docker Container - ", "DNS - "):
-        if name.startswith(prefix):
-            name = name[len(prefix) :]
-            break
-    name = re.sub(r"^https?://", "", name)
-    name = re.sub(r":\d+(/.*)?$", "", name)
-    name = re.sub(r"\.(local|lan|home|internal)$", "", name, flags=re.IGNORECASE)
-    return name
-
-
-def _valid_height(h) -> bool:
-    """Check if a mempool height response is a usable number."""
-    return isinstance(h, (int, float)) or (isinstance(h, str) and h.isdigit())
-
-
-def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
-    log("digest: starting")
-    lines = [f"<b>{title}</b>\n"]
-    cfg = get_cfg()
-
-    # ── System ───────────────────────────────────────────────────────
-    if cfg["digest"]["sections"]["system"]:
-        stats = get_system_stats()
-        th = cfg["digest"]["thresholds"]
-
-        load_amber = th["load_per_core_amber"] * stats["nproc"]
-        load_red = th["load_per_core_red"] * stats["nproc"]
-        load_rag = _rag(stats["load_1m"], load_amber, load_red)
-        mem_rag = _rag(stats["mem_pct"], th["memory_amber"], th["memory_red"])
-        disk_rag = _rag(stats["disk_pct"], th["disk_amber"], th["disk_red"])
-        rags = [load_rag, mem_rag, disk_rag]
-
-        temp_rag = None
-        if stats["cpu_temp"] is not None:
-            temp_rag = _rag(stats["cpu_temp"], th["cpu_temp_amber"], th["cpu_temp_red"])
-            rags.append(temp_rag)
-
-        all_green = all(r == "\U0001f7e2" for r in rags)
-        hdr = "<b>\U0001f5a5  System \U0001f7e2</b>" if all_green else "<b>System \U0001f5a5</b>"
-        lines.append(hdr)
-        lines.append(f"Uptime: {esc(stats['uptime'])}")
-        if all_green:
-            lines.append(f"Load: {esc(stats['load'])}")
-            lines.append(f"Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
-            if temp_rag is not None:
-                lines.append(f"CPU temp: {stats['cpu_temp']:.0f}°C")
-            lines.append(f"Disk: {esc(stats['disk'])}\n")
-        else:
-            lines.append(f"{load_rag} Load: {esc(stats['load'])}")
-            lines.append(f"{mem_rag} Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
-            if temp_rag is not None:
-                lines.append(f"{temp_rag} CPU temp: {stats['cpu_temp']:.0f}°C")
-            lines.append(f"{disk_rag} Disk: {esc(stats['disk'])}\n")
-
-    # ── Agents ───────────────────────────────────────────────────────
-    if cfg["digest"]["sections"]["agents"]:
-        token = get_wazuh_token()
-        agent_data = {}
-        disconnected_ids = []
-        if token:
-            agents = wazuh_get("/agents/summary/status", token)
-            agent_data = agents.get("data", {}).get("connection", {})
-            if agent_data.get("disconnected", 0):
-                disc_resp = wazuh_get("/agents?status=disconnected", token)
-                disconnected_ids = [a.get("id", "?") for a in disc_resp.get("data", {}).get("affected_items", [])]
-
-        active_agents = agent_data.get("active", "?")
-        disconnected = agent_data.get("disconnected", 0)
-        if disconnected:
-            ids = ", ".join(disconnected_ids) if disconnected_ids else str(disconnected)
-            suffix = "s" if disconnected != 1 else ""
-            agent_line = f"\U0001f7e1 Agents: {active_agents} active, {disconnected} disconnected (ID{suffix}: {ids})"
-        else:
-            agent_line = f"\U0001f7e2 Agents: {active_agents} active"
-        lines.append(agent_line + "\n")
-
-    # ── Security ─────────────────────────────────────────────────────
-    if cfg["digest"]["sections"]["security"]:
-        if not cfg["digest"]["sections"]["system"]:
-            stats = get_system_stats()
-        rule_counts = parse_ban_history()
-        total_bans = sum(rule_counts.values())
-        lines.append("<b>\U0001f6e1 Security</b>")
-        lines.append(f"Bans (last 24h): {total_bans} | Active: {stats['banned']}")
-
-        if not cfg["digest"]["sections"]["agents"]:
-            token = get_wazuh_token()
-        if rule_counts and token:
-            all_rids = list(rule_counts.keys())
-            rules_meta = lookup_rules(all_rids, token)
-            sorted_rids = sorted(all_rids, key=lambda rid: -(rules_meta.get(rid, {}).get("level", 0)))[:5]
-            for rid in sorted_rids:
-                count = rule_counts[rid]
-                meta = rules_meta.get(rid, {})
-                level = meta.get("level", "?")
-                desc = meta.get("description", "Unknown")
-                if len(str(desc)) > 40:
-                    desc = str(desc)[:37].rsplit(" ", 1)[0] + "..."
-                lines.append(f"  <b>{esc(str(rid))}</b> (L{level}) \u00d7{count} \u2014 {esc(desc)}")
-
-        # Level 10+ by level descending
-        result = indexer_search(
-            {
-                "size": 0,
-                "query": {
-                    "bool": {
-                        "must": [{"range": {"timestamp": {"gte": "now-24h"}}}, {"range": {"rule.level": {"gte": 10}}}]
-                    }
-                },
-                "aggs": {
-                    "by_level": {
-                        "terms": {"field": "rule.level", "size": 10, "order": {"_key": "desc"}},
-                        "aggs": {"by_rule": {"terms": {"field": "rule.description", "size": 1}}},
-                    }
-                },
-            }
-        )
-        buckets = result.get("aggregations", {}).get("by_level", {}).get("buckets", [])
-
-        if buckets:
-            lines.append("  Critical alerts (24h):")
-            for b in buckets:
-                level = b.get("key", "?")
-                count = b.get("doc_count", 0)
-                rule_b = b.get("by_rule", {}).get("buckets", [])
-                desc = rule_b[0].get("key", "Unknown") if rule_b else "Unknown"
-                if len(desc) > 40:
-                    desc = desc[:37].rsplit(" ", 1)[0] + "..."
-                lines.append(f"  L{level} \u00d7{count} \u2014 {esc(desc)}")
-        else:
-            lines.append("  No Level 10+ alerts \u2705")
-
-        lines.append("")
-
-    # ── Services ─────────────────────────────────────────────────────
-    if cfg["digest"]["sections"]["services"] and cfg["integrations"]["uptime_kuma"]["enabled"]:
-        up_list, down_list = get_uptime_kuma_status()
-        lines.append("<b>\U0001f4e1 Services</b>")
-        if down_list:
-            names = ", ".join(esc(_simplify_service_name(n)) for n in down_list)
-            lines.append(f"\U0001f534 Down: {names}")
-        else:
-            lines.append(f"\U0001f7e2 All {len(up_list)} services up")
-        lines.append("")
-
-    # ── Bitcoin ──────────────────────────────────────────────────────
-    if cfg["digest"]["sections"]["bitcoin"] and cfg["integrations"]["bitcoin"]["enabled"]:
-        lines.append("<b>\u20bf Bitcoin</b>")
-
-        local_height = mempool_get("/api/blocks/tip/height")
-        public_height = mempool_get("/api/blocks/tip/height", public=True)
-
-        lag_threshold = cfg["digest"]["bitcoin_lag_warning_blocks"]
-        local_ok = _valid_height(local_height)
-        public_ok = _valid_height(public_height)
-
-        if local_ok and public_ok:
-            lag = int(public_height) - int(local_height)
-            if lag > lag_threshold:
-                lines.append(f"\U0001f7e1 Block height: {local_height} (lagging {lag} blocks)")
-            else:
-                lines.append(f"\U0001f7e2 Block height: {local_height}")
-        elif public_ok:
-            lines.append(f"\U0001f7e1 Block height: {public_height} (local node unreachable)")
-        elif local_ok:
-            lines.append(f"\U0001f7e1 Block height: {local_height} (public API unreachable)")
-        else:
-            lines.append("\U0001f534 Block height: unavailable")
-
-        fees = mempool_get("/api/v1/fees/recommended")
-        if isinstance(fees, dict):
-            lines.append(
-                f"Fees: {fees.get('fastestFee')} / "
-                f"{fees.get('halfHourFee')} / "
-                f"{fees.get('hourFee')} sat/vB (fast/30m/1h)"
-            )
-
-        if cfg["integrations"]["lnd"]["enabled"]:
-            lnd_info = lnd_get("/v1/getinfo")
-            if lnd_info:
-                synced = "\U0001f7e2" if lnd_info.get("synced_to_chain") else "\U0001f7e1 not synced"
-                lines.append(f"LND: {synced}")
-            else:
-                lines.append("LND: \U0001f534 unreachable")
-
-            channels = lnd_get("/v1/channels")
-            if channels:
-                ch_list = channels.get("channels", [])
-                if ch_list:
-                    emoji, label = score_channel_health(ch_list)
-                    lines.append(f"Channels: {emoji} {label}")
-
-    send_message(chat_id, "\n".join(lines))
-    log("digest: sent")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

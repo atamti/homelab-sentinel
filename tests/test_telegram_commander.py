@@ -251,35 +251,6 @@ class TestCmdBlocked:
         assert "Invalid IP" in text
 
 
-class TestCmdStatus:
-    def test_fetches_wazuh_and_system_info(self, commander):
-        commander._mock_getoutput.side_effect = [
-            "0.5 0.3 0.2",  # load_str (cat /proc/loadavg)
-            "2",  # nproc
-            "45",  # mem_pct_str
-            "45",  # disk_pct_str
-            "55000",  # thermal_zone temp (55°C)
-            "",  # sensors fallback (not reached)
-            "up 2 days",  # uptime -p
-            "4.1Gi/15Gi",  # free -h (mem)
-            "45% used (20G/50G)",  # df -h (disk)
-            "3",  # iptables banned count
-            "",  # ban history grep
-        ]
-        # Mock Wazuh API auth + agents call
-        token_resp = MagicMock()
-        token_resp.json.return_value = {"data": {"token": "fake-jwt"}}
-        agents_resp = MagicMock()
-        agents_resp.json.return_value = {"data": {"connection": {"active": 3, "disconnected": 0, "total": 3}}}
-        commander._mock_post.return_value = token_resp
-        commander._mock_get.return_value = agents_resp
-
-        commander.cmd_status("123")
-        # Should have sent at least one message
-        sent_calls = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
-        assert len(sent_calls) >= 1
-
-
 class TestCmdAlerts:
     def test_displays_alerts(self, commander):
         search_resp = MagicMock()
