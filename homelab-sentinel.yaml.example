@@ -77,6 +77,10 @@ digest:
     security: true
     services: true
     bitcoin: true
+  # Agents that must always be online — "red" or "amber" severity
+  # critical_agents:
+  #   masterserver: red
+  #   minibolt: red
   # Warn if local node is more than N blocks behind public mempool
   bitcoin_lag_warning_blocks: 6
 

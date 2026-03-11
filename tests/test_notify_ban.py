@@ -44,6 +44,13 @@ class TestWriteBanLog:
         assert "Banned 1.2.3.4" in content
         assert "Rule 5710" in content
 
+    def test_unban_action(self, notify_ban):
+        notify_ban.write_ban_log("1.2.3.4", "5710", action="Unbanned")
+        with open(notify_ban._ban_log) as f:
+            content = f.read()
+        assert "Unbanned 1.2.3.4" in content
+        assert "Rule 5710" in content
+
     def test_multiple_entries_append(self, notify_ban):
         notify_ban.write_ban_log("1.1.1.1", "100")
         notify_ban.write_ban_log("2.2.2.2", "200")
@@ -80,7 +87,7 @@ class TestMainAdd:
         payload = make_ar_input(action="add", srcip="5.5.5.5", rule_id="5710")
         with (
             patch("sys.stdin") as mock_stdin,
-            patch.object(notify_ban, "run_firewall_drop"),
+            patch.object(notify_ban, "ban_ip"),
             patch.object(notify_ban, "is_duplicate", return_value=False),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
@@ -96,7 +103,7 @@ class TestMainAdd:
         payload = make_ar_input(action="add", srcip="6.6.6.6", rule_id="5710")
         with (
             patch("sys.stdin") as mock_stdin,
-            patch.object(notify_ban, "run_firewall_drop"),
+            patch.object(notify_ban, "ban_ip"),
             patch.object(notify_ban, "is_duplicate", return_value=False),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
@@ -110,7 +117,7 @@ class TestMainAdd:
         payload = make_ar_input(action="add", srcip="7.7.7.7", rule_id="99999")
         with (
             patch("sys.stdin") as mock_stdin,
-            patch.object(notify_ban, "run_firewall_drop"),
+            patch.object(notify_ban, "ban_ip"),
             patch.object(notify_ban, "is_duplicate", return_value=False),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
@@ -124,7 +131,7 @@ class TestMainAdd:
         payload = make_ar_input(action="add", srcip="8.8.8.8")
         with (
             patch("sys.stdin") as mock_stdin,
-            patch.object(notify_ban, "run_firewall_drop"),
+            patch.object(notify_ban, "ban_ip"),
             patch.object(notify_ban, "is_duplicate", return_value=True),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
@@ -140,15 +147,39 @@ class TestMainDelete:
         payload = make_ar_input(action="delete", srcip="9.9.9.9")
         with (
             patch("sys.stdin") as mock_stdin,
-            patch.object(notify_ban, "run_firewall_drop"),
-            patch.object(notify_ban, "is_already_banned", return_value=False),
+            patch.object(notify_ban, "unban_ip") as mock_unban,
         ):
             mock_stdin.read.return_value = payload
             notify_ban.main()
 
+        mock_unban.assert_called_once_with("9.9.9.9")
         assert notify_ban._mock_post.call_count == 1
         text = notify_ban._mock_post.call_args[1]["json"]["text"]
         assert "Unbanned" in text
+
+    def test_unban_logs_to_ban_history(self, notify_ban):
+        payload = make_ar_input(action="delete", srcip="9.9.9.9")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "unban_ip"),
+        ):
+            mock_stdin.read.return_value = payload
+            notify_ban.main()
+
+        with open(notify_ban._ban_log) as f:
+            content = f.read()
+        assert "Unbanned 9.9.9.9" in content
+
+    def test_unban_calls_iptables_delete(self, notify_ban):
+        payload = make_ar_input(action="delete", srcip="9.9.9.9")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "unban_ip", return_value=True) as mock_unban,
+        ):
+            mock_stdin.read.return_value = payload
+            notify_ban.main()
+
+        mock_unban.assert_called_once_with("9.9.9.9")
 
 
 class TestMainEdgeCases:
@@ -159,20 +190,17 @@ class TestMainEdgeCases:
                 "parameters": {"alert": {"rule": {}, "agent": {}, "data": {}}},
             }
         )
-        with (
-            patch("sys.stdin") as mock_stdin,
-            patch.object(notify_ban, "run_firewall_drop"),
-        ):
+        with patch("sys.stdin") as mock_stdin:
             mock_stdin.read.return_value = payload
             with pytest.raises(SystemExit):
                 notify_ban.main()
 
-    def test_firewall_ban_runs_even_when_notify_crashes(self, notify_ban):
-        """The core robustness guarantee: firewall-drop fires before notification."""
+    def test_ban_runs_even_when_notify_crashes(self, notify_ban):
+        """The core robustness guarantee: ban fires before notification."""
         payload = make_ar_input(action="add", srcip="3.3.3.3", rule_id="5710")
         with (
             patch("sys.stdin") as mock_stdin,
-            patch.object(notify_ban, "run_firewall_drop") as mock_fw,
+            patch.object(notify_ban, "ban_ip") as mock_ban,
             patch.object(notify_ban, "_notify", side_effect=Exception("sentinel broken")),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
@@ -180,15 +208,15 @@ class TestMainEdgeCases:
             # Should NOT raise — the exception in _notify is caught
             notify_ban.main()
 
-        # Firewall drop MUST have been called despite notification failure
-        mock_fw.assert_called_once()
+        # Ban MUST have been called despite notification failure
+        mock_ban.assert_called_once()
 
     def test_error_log_written_when_notify_crashes(self, notify_ban, tmp_path):
         """Notification failures are logged to ar-errors.log."""
         payload = make_ar_input(action="add", srcip="4.4.4.4", rule_id="5710")
         with (
             patch("sys.stdin") as mock_stdin,
-            patch.object(notify_ban, "run_firewall_drop"),
+            patch.object(notify_ban, "ban_ip"),
             patch.object(notify_ban, "_notify", side_effect=RuntimeError("yaml broken")),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
@@ -225,35 +253,35 @@ class TestIsAlreadyBanned:
             assert notify_ban.is_already_banned("1.2.3.4") is False
 
 
-class TestAlreadyBannedSkipsFirewallDrop:
-    def test_skips_handshake_when_already_banned(self, notify_ban):
+class TestAlreadyBannedSkipsBan:
+    def test_skips_ban_when_already_banned(self, notify_ban):
         payload = make_ar_input(action="add", srcip="3.3.3.3", rule_id="5710")
         with (
             patch("sys.stdin") as mock_stdin,
-            patch.object(notify_ban, "run_firewall_drop") as mock_fw,
+            patch.object(notify_ban, "ban_ip") as mock_ban,
             patch.object(notify_ban, "is_duplicate", return_value=False),
             patch.object(notify_ban, "is_already_banned", return_value=True),
         ):
             mock_stdin.read.return_value = payload
             notify_ban.main()
 
-        # Firewall drop should NOT have been called
-        mock_fw.assert_not_called()
+        # ban_ip should NOT have been called
+        mock_ban.assert_not_called()
         # But Telegram notification should still be sent
         assert notify_ban._mock_post.call_count >= 1
 
-    def test_calls_handshake_when_not_banned(self, notify_ban):
+    def test_calls_ban_when_not_banned(self, notify_ban):
         payload = make_ar_input(action="add", srcip="4.4.4.4", rule_id="5710")
         with (
             patch("sys.stdin") as mock_stdin,
-            patch.object(notify_ban, "run_firewall_drop") as mock_fw,
+            patch.object(notify_ban, "ban_ip") as mock_ban,
             patch.object(notify_ban, "is_duplicate", return_value=False),
             patch.object(notify_ban, "is_already_banned", return_value=False),
         ):
             mock_stdin.read.return_value = payload
             notify_ban.main()
 
-        mock_fw.assert_called_once()
+        mock_ban.assert_called_once()
 
 
 class TestDeduplicateIptables:

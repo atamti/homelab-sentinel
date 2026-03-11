@@ -173,7 +173,7 @@ class TestScoreChannelHealth:
         emoji, label = commander.score_channel_health(channels)
         assert "\U0001f7e1" in emoji
         assert "rebalancing" in label
-        assert "5%" in label
+        assert "<15% local" in label
 
     def test_needs_rebalancing_high(self, commander):
         channels = [
@@ -182,7 +182,7 @@ class TestScoreChannelHealth:
         emoji, label = commander.score_channel_health(channels)
         assert "\U0001f7e1" in emoji
         assert "rebalancing" in label
-        assert "95%" in label
+        assert ">85% local" in label
 
     def test_rebalancing_shows_count_and_pcts(self, commander):
         channels = [
@@ -193,8 +193,8 @@ class TestScoreChannelHealth:
         emoji, label = commander.score_channel_health(channels)
         assert "\U0001f7e1" in emoji
         assert "2/3" in label
-        assert "5%" in label
-        assert "95%" in label
+        assert "<15%" in label
+        assert ">85%" in label
 
 
 class TestCmdUptime:
@@ -374,3 +374,60 @@ class TestCmdRestore:
             commander.cmd_restore("123", code)
         sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         assert any("No pre-lockdown backup" in str(c) for c in sent)
+
+
+class TestCmdSyscheck:
+    def test_rejects_without_totp(self, commander):
+        commander.cmd_syscheck("123", "001")
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "TOTP required" in text
+
+    def test_polls_until_complete(self, commander):
+        code = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
+        # Mock the PUT (start) and GET (poll) responses
+        put_resp = MagicMock()
+        put_resp.status_code = 200
+        # Wazuh token response
+        token_resp = MagicMock()
+        token_resp.json.return_value = {"data": {"token": "fake-token"}}
+        token_resp.status_code = 200
+        # Poll response — scan finished
+        scan_resp = MagicMock()
+        scan_resp.json.return_value = {
+            "data": {"affected_items": [{"start": "2026-03-10T10:00:00Z", "end": "2026-03-10T10:05:00Z"}]}
+        }
+        scan_resp.status_code = 200
+        # requests.put returns the put_resp; requests.get returns token then scan
+        import requests as req_mod
+
+        with (
+            patch.object(req_mod, "put", return_value=put_resp),
+            patch.object(req_mod, "get", return_value=scan_resp),
+            patch.object(commander, "get_wazuh_token", return_value="fake-token"),
+            patch.object(commander, "wazuh_get", return_value=scan_resp.json.return_value),
+            patch("time.sleep"),
+        ):
+            commander.cmd_syscheck("123", f"001 {code}")
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
+        texts = [c[1]["json"]["text"] for c in sent]
+        assert any("started" in t for t in texts)
+        assert any("completed" in t for t in texts)
+
+    def test_timeout_message(self, commander):
+        code = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
+        put_resp = MagicMock()
+        put_resp.status_code = 200
+        # Poll response — scan never finishes (no "end")
+        scan_data = {"data": {"affected_items": [{"start": "2026-03-10T10:00:00Z"}]}}
+        import requests as req_mod
+
+        with (
+            patch.object(req_mod, "put", return_value=put_resp),
+            patch.object(commander, "get_wazuh_token", return_value="fake-token"),
+            patch.object(commander, "wazuh_get", return_value=scan_data),
+            patch("time.sleep"),
+        ):
+            commander.cmd_syscheck("123", f"001 {code}")
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
+        texts = [c[1]["json"]["text"] for c in sent]
+        assert any("still running" in t for t in texts)

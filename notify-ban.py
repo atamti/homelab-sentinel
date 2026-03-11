@@ -2,13 +2,13 @@
 """
 notify-ban.py - Wazuh Active Response + Telegram Notification Script
 ======================================================================
-Deployed as a Wazuh active response binary. Handles the two-phase
-firewall-drop handshake, bans the offending IP via iptables, sends
-a Telegram notification, and writes to the ban history log.
+Deployed as a Wazuh active response binary. Bans/unbans the offending
+IP directly via iptables, sends a Telegram notification, and writes
+to the ban history log.
 
-DESIGN PRINCIPLE: The firewall ban MUST succeed even if everything else
-(Telegram, config loading, logging) is broken.  run_firewall_drop()
-executes first with only the raw stdin JSON.  All notification and
+DESIGN PRINCIPLE: The firewall action MUST succeed even if everything
+else (Telegram, config loading, logging) is broken.  ban_ip()/unban_ip()
+execute first with only the raw stdin JSON.  All notification and
 logging is best-effort and wrapped in try/except so it can never
 prevent the security action.
 
@@ -76,7 +76,7 @@ def send_telegram(chat_id: str, message: str) -> None:
         debug_log(f"send exception: {exc}")
 
 
-def write_ban_log(ip: str, rule_id: str) -> None:
+def write_ban_log(ip: str, rule_id: str, action: str = "Banned") -> None:
     """Best-effort ban log write.  Never raises."""
     try:
         from sentinel.config import get_cfg
@@ -86,7 +86,7 @@ def write_ban_log(ip: str, rule_id: str) -> None:
         ban_log = "/var/ossec/logs/ban-history.log"
     try:
         with open(ban_log, "a") as f:
-            f.write(f"{time.strftime('%Y/%m/%d %H:%M:%S')} Banned {ip} (Rule {rule_id})\n")
+            f.write(f"{time.strftime('%Y/%m/%d %H:%M:%S')} {action} {ip} (Rule {rule_id})\n")
     except Exception as e:
         _log_error(f"Ban log write error ({ban_log}): {e}")
         debug_log(f"Ban log write error: {e}")
@@ -166,34 +166,36 @@ def deduplicate_iptables() -> int:
         return 0
 
 
-def run_firewall_drop(alert_json: str) -> None:
-    """Execute firewall-drop via two-phase stdin/stdout handshake.
-
-    Phase 1: send alert JSON to firewall-drop
-    Phase 2: receive check_keys request, respond 'continue'
-    """
-    fw_bin = "/var/ossec/active-response/bin/firewall-drop"
+def ban_ip(ip: str) -> bool:
+    """Ban an IP via iptables.  Returns True on success."""
     try:
-        proc = subprocess.Popen([fw_bin], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        proc.stdin.write(alert_json.encode())
-        proc.stdin.flush()
-
-        # Read check_keys request
-        response = proc.stdout.readline()
-        debug_log(f"firewall-drop check_keys: {response.decode().strip()}")
-
-        # Send continue
-        proc.stdin.write(b"continue\n")
-        proc.stdin.flush()
-        proc.stdin.close()
-
-        stdout, stderr = proc.communicate(timeout=10)
-        debug_log(f"firewall-drop stdout: {stdout.decode().strip()}")
-        if stderr:
-            debug_log(f"firewall-drop stderr: {stderr.decode().strip()}")
+        subprocess.run(
+            ["iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"],
+            check=True,
+            capture_output=True,
+        )
+        debug_log(f"iptables: banned {ip}")
+        return True
     except Exception as e:
-        _log_error(f"firewall-drop execution failed: {e}")
-        debug_log(f"firewall-drop error: {e}")
+        _log_error(f"iptables ban failed for {ip}: {e}")
+        debug_log(f"iptables ban error: {e}")
+        return False
+
+
+def unban_ip(ip: str) -> bool:
+    """Remove iptables DROP rule for IP.  Returns True on success."""
+    try:
+        subprocess.run(
+            ["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"],
+            check=True,
+            capture_output=True,
+        )
+        debug_log(f"iptables: unbanned {ip}")
+        return True
+    except Exception as e:
+        _log_error(f"iptables unban failed for {ip}: {e}")
+        debug_log(f"iptables unban error: {e}")
+        return False
 
 
 def _extract_ip(data: dict) -> str:
@@ -241,14 +243,17 @@ def main() -> None:
         debug_log("Invalid IP from alert, exiting")
         sys.exit(1)
 
-    # ── Phase 2: FIREWALL BAN — runs before any config/notification ──
+    # ── Phase 2: FIREWALL ACTION — runs before any config/notification ──
     # This block uses ONLY stdlib.  No sentinel imports, no env loading,
     # no YAML config, no Telegram.  If it fails, it's a real OS-level
-    # problem (missing firewall-drop binary, iptables broken).
-    if not is_already_banned(ip):
-        run_firewall_drop(raw)
-    else:
-        debug_log(f"{ip} already in iptables, skipping firewall-drop")
+    # problem (iptables broken / permissions).
+    if action == "add":
+        if not is_already_banned(ip):
+            ban_ip(ip)
+        else:
+            debug_log(f"{ip} already in iptables, skipping ban")
+    elif action == "delete":
+        unban_ip(ip)
 
     # ── Phase 3: Notification & logging (best-effort) ────────────────
     # Everything below is wrapped so failures can never retroactively
@@ -311,6 +316,8 @@ def _notify(action: str, ip: str, data: dict) -> None:
 
     # ── Handle delete (ban expiry) ───────────────────────────────────
     elif action == "delete":
+        write_ban_log(ip, rule_id, action="Unbanned")
+
         if ar_cfg.get("notify_on_expire", True):
             message = (
                 f"✅ <b>Active Response: Unbanned</b>\n"

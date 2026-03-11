@@ -72,6 +72,7 @@ _DEFAULTS = {
             "services": True,
             "bitcoin": True,
         },
+        "critical_agents": {},
         "bitcoin_lag_warning_blocks": 6,
         "thresholds": {
             "load_per_core_amber": 1.0,

@@ -159,8 +159,10 @@ def score_channel_health(channels: list) -> tuple[str, str]:
         local = int(c.get("local_balance", 0))
         if capacity > 0:
             ratio = local / capacity
-            if ratio < min_ratio or ratio > max_ratio:
-                imbalanced.append(f"{round(ratio * 100)}% local")
+            if ratio < min_ratio:
+                imbalanced.append(f"<{round(min_ratio * 100)}% local")
+            elif ratio > max_ratio:
+                imbalanced.append(f">{round(max_ratio * 100)}% local")
 
     if imbalanced:
         pcts = ", ".join(imbalanced)
@@ -452,24 +454,37 @@ def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
     # ── Agents ───────────────────────────────────────────────────────
     if cfg["digest"]["sections"]["agents"]:
         token = get_wazuh_token()
-        agent_data = {}
-        disconnected_ids = []
+        agent_list = []
         if token:
-            agents = wazuh_get("/agents/summary/status", token)
-            agent_data = agents.get("data", {}).get("connection", {})
-            if agent_data.get("disconnected", 0):
-                disc_resp = wazuh_get("/agents?status=disconnected", token)
-                disconnected_ids = [a.get("id", "?") for a in disc_resp.get("data", {}).get("affected_items", [])]
+            resp = wazuh_get("/agents?limit=50", token)
+            agent_list = resp.get("data", {}).get("affected_items", [])
 
-        active_agents = agent_data.get("active", "?")
-        disconnected = agent_data.get("disconnected", 0)
-        if disconnected:
-            ids = ", ".join(disconnected_ids) if disconnected_ids else str(disconnected)
-            suffix = "s" if disconnected != 1 else ""
-            agent_line = f"\U0001f7e1 Agents: {active_agents} active, {disconnected} disconnected (ID{suffix}: {ids})"
+        critical = cfg["digest"].get("critical_agents", {})
+        active = [a for a in agent_list if a.get("status") == "active"]
+        disconnected = [a for a in agent_list if a.get("status") != "active"]
+
+        # Check if any critical agent is disconnected
+        disc_names = {a.get("name", "") for a in disconnected}
+        red_down = any(sev == "red" and n in disc_names for n, sev in critical.items())
+
+        if red_down:
+            hdr_emoji = "\U0001f534"
+        elif disconnected:
+            hdr_emoji = "\U0001f7e1"
         else:
-            agent_line = f"\U0001f7e2 Agents: {active_agents} active"
-        lines.append(agent_line + "\n")
+            hdr_emoji = "\U0001f7e2"
+
+        lines.append(f"{hdr_emoji} <b>Agents:</b> {len(active)} active")
+        if disconnected:
+            for a in disconnected:
+                name = a.get("name", "?")
+                os_name = a.get("os", {}).get("name", "?")
+                lines.append(f"  \U0001f534 {esc(name)} ({esc(os_name)})")
+        for a in active:
+            name = a.get("name", "?")
+            os_name = a.get("os", {}).get("name", "?")
+            lines.append(f"  \U0001f7e2 {esc(name)} ({esc(os_name)})")
+        lines.append("")
 
     # ── Security ─────────────────────────────────────────────────────
     if cfg["digest"]["sections"]["security"]:
@@ -914,11 +929,29 @@ def cmd_syscheck(chat_id: str, arg: str) -> None:
     if not valid:
         return
     token = get_wazuh_token()
-    if token:
-        requests.put(
-            f"{WAZUH_API}/syscheck/{agent_id}", headers={"Authorization": f"Bearer {token}"}, verify=False, timeout=10
-        )
-        send_message(chat_id, f"\u2705 Integrity scan started on agent {agent_id}")
+    if not token:
+        send_message(chat_id, "\u26d4 Failed to authenticate with Wazuh API")
+        return
+    resp = requests.put(
+        f"{WAZUH_API}/syscheck/{agent_id}", headers={"Authorization": f"Bearer {token}"}, verify=False, timeout=10
+    )
+    if resp.status_code != 200:
+        send_message(chat_id, f"\u26d4 Failed to start syscheck: HTTP {resp.status_code}")
+        return
+    send_message(chat_id, f"\u23f3 Integrity scan started on agent {agent_id}, polling...")
+    # Poll for completion (up to 5 minutes)
+    for _ in range(30):
+        time.sleep(10)
+        token = get_wazuh_token()
+        if not token:
+            break
+        scan = wazuh_get(f"/syscheck/{agent_id}/last_scan", token)
+        status = scan.get("data", {}).get("affected_items", [{}])[0]
+        if status.get("end"):
+            end_time = status["end"]
+            send_message(chat_id, f"\u2705 Syscheck completed on agent {agent_id} at {end_time}")
+            return
+    send_message(chat_id, f"\u23f3 Syscheck still running on agent {agent_id} (timeout waiting)")
 
 
 def cmd_shutdown(chat_id: str, arg: str) -> None:
