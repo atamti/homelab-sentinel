@@ -479,7 +479,8 @@ def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
             for a in disconnected:
                 name = a.get("name", "?")
                 os_name = a.get("os", {}).get("name", "?")
-                lines.append(f"  \U0001f534 {esc(name)} ({esc(os_name)})")
+                dot = "\U0001f534" if name in critical else "\U0001f7e1"
+                lines.append(f"  {dot} {esc(name)} ({esc(os_name)})")
         for a in active:
             name = a.get("name", "?")
             os_name = a.get("os", {}).get("name", "?")
