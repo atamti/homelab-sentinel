@@ -396,7 +396,8 @@ def cmd_help(chat_id: str) -> None:
     text += "/disk - Disk usage\n"
     text += "/uptime - System uptime\n"
     text += "/services - Docker container status\n"
-    text += "/digest - Send daily digest now\n\n"
+    text += "/digest - Send daily digest now\n"
+    text += "/status - Status report (same as digest)\n\n"
     text += "<b>Active Response (TOTP required):</b>\n"
     text += "/block [ip] [totp] - Block an IP\n"
     text += "/unblock [ip] [totp] - Unblock an IP\n"
@@ -510,7 +511,7 @@ def cmd_agents(chat_id: str) -> None:
         ip = a.get("ip", "?")
         os_name = a.get("os", {}).get("name", "?")
         text += f"{emoji} <b>{esc(name)}</b> (ID: {agent_id})\n"
-        text += f"   IP: {ip} | OS: {esc(os_name)}\n"
+        text += f"   IP: <code>{ip}</code> | OS: {esc(os_name)}\n"
 
     send_message(chat_id, text)
 
@@ -584,7 +585,7 @@ def cmd_blocked(chat_id: str, arg: str = "") -> None:
         history = subprocess.getoutput(f"grep -F '{ip}' /var/ossec/logs/ban-history.log | tail -20")
         send_message(
             chat_id,
-            f"<b>Lookup: {esc(ip)}</b>\n\n"
+            f"<b>Lookup: <code>{esc(ip)}</code></b>\n\n"
             f"<b>Active rules:</b>\n<pre>{esc(current) or 'Not currently banned'}</pre>\n\n"
             f"<b>Ban history:</b>\n<pre>{esc(history) or 'No history found'}</pre>",
         )
@@ -659,9 +660,9 @@ def _valid_height(h) -> bool:
     return isinstance(h, (int, float)) or (isinstance(h, str) and h.isdigit())
 
 
-def cmd_digest(chat_id: str) -> None:
+def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
     log("digest: starting")
-    lines = ["<b>\u2600\ufe0f Daily Digest</b>\n"]
+    lines = [f"<b>{title}</b>\n"]
     cfg = get_cfg()
 
     # ── System ───────────────────────────────────────────────────────
@@ -674,15 +675,29 @@ def cmd_digest(chat_id: str) -> None:
         load_rag = _rag(stats["load_1m"], load_amber, load_red)
         mem_rag = _rag(stats["mem_pct"], th["memory_amber"], th["memory_red"])
         disk_rag = _rag(stats["disk_pct"], th["disk_amber"], th["disk_red"])
+        rags = [load_rag, mem_rag, disk_rag]
 
-        lines.append("<b>\U0001f5a5 System</b>")
-        lines.append(f"Uptime: {esc(stats['uptime'])}")
-        lines.append(f"{load_rag} Load: {esc(stats['load'])}")
-        lines.append(f"{mem_rag} Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
+        temp_rag = None
         if stats["cpu_temp"] is not None:
             temp_rag = _rag(stats["cpu_temp"], th["cpu_temp_amber"], th["cpu_temp_red"])
-            lines.append(f"{temp_rag} CPU temp: {stats['cpu_temp']:.0f}°C")
-        lines.append(f"{disk_rag} Disk: {esc(stats['disk'])}\n")
+            rags.append(temp_rag)
+
+        all_green = all(r == "\U0001f7e2" for r in rags)
+        hdr = "<b>\U0001f5a5 \U0001f7e2 System</b>" if all_green else "<b>\U0001f5a5 System</b>"
+        lines.append(hdr)
+        lines.append(f"Uptime: {esc(stats['uptime'])}")
+        if all_green:
+            lines.append(f"Load: {esc(stats['load'])}")
+            lines.append(f"Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
+            if temp_rag is not None:
+                lines.append(f"CPU temp: {stats['cpu_temp']:.0f}°C")
+            lines.append(f"Disk: {esc(stats['disk'])}\n")
+        else:
+            lines.append(f"{load_rag} Load: {esc(stats['load'])}")
+            lines.append(f"{mem_rag} Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
+            if temp_rag is not None:
+                lines.append(f"{temp_rag} CPU temp: {stats['cpu_temp']:.0f}°C")
+            lines.append(f"{disk_rag} Disk: {esc(stats['disk'])}\n")
 
     # ── Agents ───────────────────────────────────────────────────────
     if cfg["digest"]["sections"]["agents"]:
@@ -726,8 +741,8 @@ def cmd_digest(chat_id: str) -> None:
                 meta = rules_meta.get(rid, {})
                 level = meta.get("level", "?")
                 desc = meta.get("description", "Unknown")
-                if len(str(desc)) > 20:
-                    desc = str(desc)[:17].rsplit(" ", 1)[0] + "..."
+                if len(str(desc)) > 40:
+                    desc = str(desc)[:37].rsplit(" ", 1)[0] + "..."
                 lines.append(f"  <b>{esc(str(rid))}</b> (L{level}) \u00d7{count} \u2014 {esc(desc)}")
 
         # Level 10+ by level descending
@@ -756,8 +771,8 @@ def cmd_digest(chat_id: str) -> None:
                 count = b.get("doc_count", 0)
                 rule_b = b.get("by_rule", {}).get("buckets", [])
                 desc = rule_b[0].get("key", "Unknown") if rule_b else "Unknown"
-                if len(desc) > 20:
-                    desc = desc[:17].rsplit(" ", 1)[0] + "..."
+                if len(desc) > 40:
+                    desc = desc[:37].rsplit(" ", 1)[0] + "..."
                 lines.append(f"  L{level} \u00d7{count} \u2014 {esc(desc)}")
         else:
             lines.append("  No Level 10+ alerts \u2705")
@@ -842,7 +857,7 @@ def cmd_block(chat_id: str, arg: str) -> None:
         return
     subprocess.run(["iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"], check=True)
     log(f"block: manually blocked {ip}")
-    send_message(chat_id, f"\U0001f6ab Blocked {ip}")
+    send_message(chat_id, f"\U0001f6ab Blocked <code>{ip}</code>")
 
 
 def cmd_unblock(chat_id: str, arg: str) -> None:
@@ -860,7 +875,7 @@ def cmd_unblock(chat_id: str, arg: str) -> None:
         text=True,
     )
     log(f"unblock: {ip}")
-    send_message(chat_id, f"\u2705 Unblocked {ip}\n{result.stderr}")
+    send_message(chat_id, f"\u2705 Unblocked <code>{ip}</code>\n{result.stderr}")
 
 
 def cmd_closeport(chat_id: str, arg: str) -> None:
@@ -965,7 +980,7 @@ def cmd_shutdown(chat_id: str, arg: str) -> None:
 COMMANDS = {
     "/help": lambda c, a: cmd_help(c),
     "/start": lambda c, a: cmd_help(c),
-    "/status": lambda c, a: cmd_status(c),
+    "/status": lambda c, a: cmd_digest(c, title="\U0001f4cb Status Report"),
     "/event": cmd_event,
     "/agents": lambda c, a: cmd_agents(c),
     "/alerts": lambda c, a: cmd_alerts(c),

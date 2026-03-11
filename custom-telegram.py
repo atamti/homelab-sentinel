@@ -79,7 +79,7 @@ def format_alert(alert: dict) -> tuple[str, int, str]:
     msg += f"<b>Rule:</b> {rule_id} - {description}\n"
     msg += f"<b>Time:</b> {timestamp[:19]}\n"
     if src_ip:
-        msg += f"<b>Source IP:</b> {src_ip}\n"
+        msg += f"<b>Source IP:</b> <code>{src_ip}</code>\n"
 
     # Enrich port change alerts with agent, port, and direction
     if rule_id == "100200":

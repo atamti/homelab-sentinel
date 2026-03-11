@@ -299,7 +299,7 @@ def _notify(action: str, ip: str, data: dict) -> None:
 
         message = (
             f"🔨 <b>Active Response: Banned</b>\n"
-            f"<b>IP:</b> {ip}{country_str}\n"
+            f"<b>IP:</b> <code>{ip}</code>{country_str}\n"
             f"<b>Rule:</b> {rule_id} - {rule_desc}\n"
             f"<b>Agent:</b> {agent_name}"
         )
@@ -314,7 +314,7 @@ def _notify(action: str, ip: str, data: dict) -> None:
         if ar_cfg.get("notify_on_expire", True):
             message = (
                 f"✅ <b>Active Response: Unbanned</b>\n"
-                f"<b>IP:</b> {ip}{country_str}\n"
+                f"<b>IP:</b> <code>{ip}</code>{country_str}\n"
                 f"<b>Rule:</b> {rule_id}\n"
                 f"<b>Agent:</b> {agent_name}"
             )

@@ -87,7 +87,7 @@ _DEFAULTS = {
     "integrations": {
         "bitcoin": {
             "enabled": True,
-            "mempool_local": "http://minibolt.local:4081",
+            "mempool_local": "https://minibolt.local:4081",
             "mempool_public_fallback": True,
         },
         "lnd": {
