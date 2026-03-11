@@ -283,6 +283,10 @@ def _notify(action: str, ip: str, data: dict) -> None:
     rule_desc = rule.get("description", "Unknown rule")
     agent_name = agent.get("name", "unknown")
 
+    from sentinel.sanitize import agent_alias
+
+    agent_display = agent_alias(agent_name)
+
     country = geo.get("country_name", "")
     country_str = f" [{country}]" if country else ""
 
@@ -306,7 +310,7 @@ def _notify(action: str, ip: str, data: dict) -> None:
             f"🔨 <b>Active Response: Banned</b>\n"
             f"<b>IP:</b> <code>{ip}</code>{country_str}\n"
             f"<b>Rule:</b> {rule_id} - {rule_desc}\n"
-            f"<b>Agent:</b> {agent_name}"
+            f"<b>Agent:</b> {agent_display}"
         )
 
         send_telegram(full_log_chat, message)
@@ -323,7 +327,7 @@ def _notify(action: str, ip: str, data: dict) -> None:
                 f"✅ <b>Active Response: Unbanned</b>\n"
                 f"<b>IP:</b> <code>{ip}</code>{country_str}\n"
                 f"<b>Rule:</b> {rule_id}\n"
-                f"<b>Agent:</b> {agent_name}"
+                f"<b>Agent:</b> {agent_display}"
             )
             send_telegram(full_log_chat, message)
 

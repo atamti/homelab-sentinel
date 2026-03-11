@@ -273,9 +273,8 @@ class TestCmdAlerts:
         sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         assert len(sent) >= 1
         text = sent[0][1]["json"]["text"]
-        assert "Agent 001" in text
+        assert "server1" in text
         assert "Rule 5710" in text
-        assert "server1" not in text  # agent name stripped
 
 
 class TestCmdEvent:
@@ -327,7 +326,7 @@ class TestCmdEvent:
         assert "A" * 150 in text
         assert "A" * 151 not in text
         assert "..." in text
-        assert "<b>Agent:</b> 001" in text  # uses agent ID, not name
+        assert "<b>Agent:</b> server1" in text
 
 
 # ── Active response commands ─────────────────────────────────────────────────

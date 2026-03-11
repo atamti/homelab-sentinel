@@ -30,6 +30,24 @@ def reload_config() -> None:
     _reload_config()
 
 
+def agent_alias(name: str) -> str:
+    """Return the display alias for an agent hostname.
+
+    Reads the sanitization.hostnames config dict:
+    - If the hostname maps to a string value, return that alias.
+    - If the hostname maps to null, return the original name (no redaction here).
+    - If the hostname is not configured, return the original name.
+    """
+    cfg = _san_config()
+    hostnames = cfg.get("hostnames") or cfg.get("internal_hostnames") or {}
+    if isinstance(hostnames, list):
+        return name
+    for hostname, display in hostnames.items():
+        if hostname and hostname.lower() == name.lower() and display:
+            return str(display)
+    return name
+
+
 # ── HTML-safe regex helper ───────────────────────────────────────────────────
 
 # Matches HTML tags so we can skip them during replacement

@@ -34,7 +34,7 @@ import requests
 
 from sentinel import telegram, wazuh
 from sentinel.config import VERSION, env, get_cfg, require_env
-from sentinel.sanitize import sanitize, summarize_docker_output
+from sentinel.sanitize import agent_alias, sanitize, summarize_docker_output
 from sentinel.telegram import esc
 from sentinel.validate import validated_ip, validated_port
 
@@ -478,13 +478,15 @@ def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
         if disconnected:
             for a in disconnected:
                 name = a.get("name", "?")
+                display = agent_alias(name)
                 os_name = a.get("os", {}).get("name", "?")
                 dot = "\U0001f534" if name in critical else "\U0001f7e1"
-                lines.append(f"  {dot} {esc(name)} ({esc(os_name)})")
+                lines.append(f"  {dot} {esc(display)} ({esc(os_name)})")
         for a in active:
             name = a.get("name", "?")
+            display = agent_alias(name)
             os_name = a.get("os", {}).get("name", "?")
-            lines.append(f"  \U0001f7e2 {esc(name)} ({esc(os_name)})")
+            lines.append(f"  \U0001f7e2 {esc(display)} ({esc(os_name)})")
         lines.append("")
 
     # ── Security ─────────────────────────────────────────────────────
@@ -659,7 +661,9 @@ def cmd_event(chat_id: str, arg: str) -> None:
     text += f"<b>ID:</b> {a.get('id')}\n"
     text += f"<b>Level:</b> {rule.get('level')}\n"
     text += f"<b>Rule:</b> {rule.get('id')} - {rule.get('description')}\n"
-    text += f"<b>Agent:</b> {agent.get('id', '?')}\n"
+    agent_name = agent.get('name', '')
+    agent_display = agent_alias(agent_name) if agent_name else agent.get('id', '?')
+    text += f"<b>Agent:</b> {esc(agent_display)}\n"
     text += f"<b>Time:</b> {a.get('timestamp', '')[:19]}\n"
     text += f"<b>Groups:</b> {', '.join(rule.get('groups', []))}\n"
 
@@ -692,10 +696,11 @@ def cmd_agents(chat_id: str) -> None:
     for a in agents:
         emoji = "🟢" if a.get("status") == "active" else "🔴"
         name = a.get("name", "unknown")
+        display = agent_alias(name)
         agent_id = a.get("id", "?")
         ip = a.get("ip", "?")
         os_name = a.get("os", {}).get("name", "?")
-        text += f"{emoji} <b>{esc(name)}</b> (ID: {agent_id})\n"
+        text += f"{emoji} <b>{esc(display)}</b> (ID: {agent_id})\n"
         text += f"   IP: <code>{ip}</code> | OS: {esc(os_name)}\n"
 
     send_message(chat_id, text)
@@ -715,8 +720,9 @@ def cmd_alerts(chat_id: str) -> None:
         a = h.get("_source", {})
         rule = a.get("rule", {})
         agent = a.get("agent", {})
-        agent_id = agent.get("id", "?")
-        text += f"L{rule.get('level')} | Agent {agent_id} | Rule {rule.get('id')} | {a.get('timestamp', '')[:19]}\n"
+        agent_name = agent.get("name", "")
+        agent_display = agent_alias(agent_name) if agent_name else agent.get("id", "?")
+        text += f"L{rule.get('level')} | {esc(agent_display)} | Rule {rule.get('id')} | {a.get('timestamp', '')[:19]}\n"
         text += f"Ref: <code>{a.get('id')}</code>\n\n"
 
     send_message(chat_id, text)

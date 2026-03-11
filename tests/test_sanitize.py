@@ -69,6 +69,41 @@ class TestScrubHostnames:
         assert count == 0
 
 
+# ── agent_alias ──────────────────────────────────────────────────────────────
+
+
+class TestAgentAlias:
+    def test_returns_codename(self, tmp_path):
+        cfg = {"sanitization": {"hostnames": {"masterserver": "sentinel"}}}
+        with _patch_config(tmp_path, cfg):
+            assert sanitize.agent_alias("masterserver") == "sentinel"
+
+    def test_case_insensitive(self, tmp_path):
+        cfg = {"sanitization": {"hostnames": {"MasterServer": "sentinel"}}}
+        with _patch_config(tmp_path, cfg):
+            assert sanitize.agent_alias("masterserver") == "sentinel"
+
+    def test_null_value_returns_original(self, tmp_path):
+        cfg = {"sanitization": {"hostnames": {"masterserver": None}}}
+        with _patch_config(tmp_path, cfg):
+            assert sanitize.agent_alias("masterserver") == "masterserver"
+
+    def test_unknown_host_returns_original(self, tmp_path):
+        cfg = {"sanitization": {"hostnames": {"other": "alias"}}}
+        with _patch_config(tmp_path, cfg):
+            assert sanitize.agent_alias("masterserver") == "masterserver"
+
+    def test_no_config_returns_original(self, tmp_path):
+        cfg = {"sanitization": {}}
+        with _patch_config(tmp_path, cfg):
+            assert sanitize.agent_alias("masterserver") == "masterserver"
+
+    def test_old_list_format_returns_original(self, tmp_path):
+        cfg = {"sanitization": {"hostnames": ["masterserver"]}}
+        with _patch_config(tmp_path, cfg):
+            assert sanitize.agent_alias("masterserver") == "masterserver"
+
+
 # ── scrub_internal_ips ───────────────────────────────────────────────────────
 
 
