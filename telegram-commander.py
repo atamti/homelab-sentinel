@@ -934,7 +934,11 @@ def cmd_syscheck(chat_id: str, arg: str) -> None:
         send_message(chat_id, "\u26d4 Failed to authenticate with Wazuh API")
         return
     resp = requests.put(
-        f"{WAZUH_API}/syscheck/{agent_id}", headers={"Authorization": f"Bearer {token}"}, verify=False, timeout=10
+        f"{WAZUH_API}/syscheck",
+        params={"agents_list": agent_id},
+        headers={"Authorization": f"Bearer {token}"},
+        verify=False,
+        timeout=10,
     )
     if resp.status_code != 200:
         send_message(chat_id, f"\u26d4 Failed to start syscheck: HTTP {resp.status_code}")
