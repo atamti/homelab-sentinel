@@ -707,7 +707,12 @@ def cmd_agents(chat_id: str) -> None:
 
 
 def cmd_alerts(chat_id: str) -> None:
-    query = {"size": 10, "sort": [{"timestamp": {"order": "desc"}}], "query": {"range": {"rule.level": {"gte": 8}}}}
+    query = {
+        "size": 10,
+        "sort": [{"timestamp": {"order": "desc"}}],
+        "query": {"range": {"rule.level": {"gte": 8}}},
+        "_source": ["id", "timestamp", "rule", "agent"],
+    }
     result = indexer_search(query)
     hits = result.get("hits", {}).get("hits", [])
 
@@ -722,8 +727,11 @@ def cmd_alerts(chat_id: str) -> None:
         agent = a.get("agent", {})
         agent_name = agent.get("name", "")
         agent_display = agent_alias(agent_name) if agent_name else agent.get("id", "?")
-        text += f"L{rule.get('level')} | {esc(agent_display)} | Rule {rule.get('id')} | {a.get('timestamp', '')[:19]}\n"
-        text += f"Ref: <code>{a.get('id')}</code>\n\n"
+        desc = rule.get("description", "")
+        text += f"L{rule.get('level')} | {esc(agent_display)} | Rule {rule.get('id')}\n"
+        if desc:
+            text += f"{esc(desc)}\n"
+        text += f"{a.get('timestamp', '')[:19]} | Ref: <code>{a.get('id')}</code>\n\n"
 
     send_message(chat_id, text)
 

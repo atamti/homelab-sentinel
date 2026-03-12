@@ -275,6 +275,7 @@ class TestCmdAlerts:
         text = sent[0][1]["json"]["text"]
         assert "server1" in text
         assert "Rule 5710" in text
+        assert "SSH brute force" in text
 
 
 class TestCmdEvent:
