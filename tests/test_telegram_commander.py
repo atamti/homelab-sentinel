@@ -140,6 +140,10 @@ class TestProcessUpdate:
         text = commander._mock_post.call_args[1]["json"]["text"]
         assert "Homelab Sentinel" in text
         assert "/status" in text
+        assert "/system" in text
+        assert "/security" in text
+        assert "/bitcoin" in text
+        assert "Active Response" in text
 
 
 # ── Read-only commands ───────────────────────────────────────────────────────
