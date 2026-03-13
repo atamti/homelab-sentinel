@@ -821,11 +821,262 @@ def cmd_uptime(chat_id: str) -> None:
 
 
 def cmd_services(chat_id: str) -> None:
+    lines = ["<b>\U0001f4e1 Services</b>\n"]
+
+    # Docker containers
     result = subprocess.getoutput(
         "DOCKER_HOST=unix:///run/user/1001/docker.sock docker ps -a --format 'table {{.Names}}\t{{.Status}}' 2>&1"
     )
     summary = summarize_docker_output(result)
-    send_message(chat_id, f"<b>Docker Services</b>\n\n{summary}")
+    lines.append(f"<b>Docker Containers</b>\n{summary}\n")
+
+    # Uptime Kuma monitors
+    cfg = get_cfg()
+    if cfg["integrations"]["uptime_kuma"]["enabled"]:
+        up_list, down_list = get_uptime_kuma_status()
+        if down_list:
+            lines.append("<b>Uptime Kuma</b>")
+            for name in down_list:
+                lines.append(f"  \U0001f534 {esc(_simplify_service_name(name))}")
+            for name in up_list:
+                lines.append(f"  \U0001f7e2 {esc(_simplify_service_name(name))}")
+        elif up_list:
+            lines.append(f"<b>Uptime Kuma</b>\n\U0001f7e2 All {len(up_list)} monitors up")
+        else:
+            lines.append("<b>Uptime Kuma</b>\n\U0001f7e1 No monitor data")
+
+    send_message(chat_id, "\n".join(lines))
+
+
+def cmd_system(chat_id: str) -> None:
+    stats = get_system_stats()
+    cfg = get_cfg()
+    th = cfg["digest"]["thresholds"]
+
+    load_amber = th["load_per_core_amber"] * stats["nproc"]
+    load_red = th["load_per_core_red"] * stats["nproc"]
+    load_rag = _rag(stats["load_1m"], load_amber, load_red)
+    mem_rag = _rag(stats["mem_pct"], th["memory_amber"], th["memory_red"])
+    disk_rag = _rag(stats["disk_pct"], th["disk_amber"], th["disk_red"])
+
+    lines = ["<b>\U0001f5a5 System Detail</b>\n"]
+    lines.append(f"Uptime: {esc(stats['uptime'])}")
+    lines.append(f"{load_rag} Load: {esc(stats['load'])} ({stats['nproc']} cores)")
+    lines.append(f"{mem_rag} Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
+
+    if stats["cpu_temp"] is not None:
+        temp_rag = _rag(stats["cpu_temp"], th["cpu_temp_amber"], th["cpu_temp_red"])
+        lines.append(f"{temp_rag} CPU temp: {stats['cpu_temp']:.0f}°C")
+
+    lines.append(f"{disk_rag} Disk: {esc(stats['disk'])}")
+
+    # Detailed disk breakdown
+    raw = subprocess.getoutput("df -h --exclude-type=tmpfs --exclude-type=devtmpfs")
+    disk_lines = raw.splitlines()
+    if len(disk_lines) > 1:
+        out = [f"{'Drive':<10} {'Size':>5} {'Used':>5} {'Avail':>5} {'Use%':>5}  Mounted on"]
+        for i, line in enumerate(disk_lines[1:], 1):
+            cols = line.split()
+            if len(cols) >= 6:
+                mount = " ".join(cols[5:])
+                out.append(f"{'Drive ' + str(i):<10} {cols[1]:>5} {cols[2]:>5} {cols[3]:>5} {cols[4]:>5}  {mount}")
+        lines.append(f"\n<pre>{esc(chr(10).join(out))}</pre>")
+
+    # Top processes
+    top_procs = subprocess.getoutput("ps -eo pid,pcpu,pmem,comm --sort=-pcpu --no-headers | head -5")
+    if top_procs.strip():
+        lines.append("\n<b>Top Processes (CPU)</b>")
+        lines.append(f"<pre>{esc(top_procs.strip())}</pre>")
+
+    send_message(chat_id, "\n".join(lines))
+
+
+def cmd_security(chat_id: str) -> None:
+    lines = ["<b>\U0001f6e1 Security Detail</b>\n"]
+    stats = get_system_stats()
+
+    # Active bans
+    lines.append("<b>Firewall</b>")
+    lines.append(f"Active bans: {stats['banned']}")
+
+    # Ban history 24h
+    rule_counts = parse_ban_history()
+    total_bans = sum(rule_counts.values())
+    lines.append(f"Bans in last 24h: {total_bans}")
+
+    token = get_wazuh_token()
+
+    # Active response breakdown
+    if rule_counts and token:
+        all_rids = list(rule_counts.keys())
+        rules_meta = lookup_rules(all_rids, token)
+        sorted_rids = sorted(all_rids, key=lambda rid: -(rules_meta.get(rid, {}).get("level", 0)))
+        lines.append("\n<b>Active Response (24h)</b>")
+        for rid in sorted_rids:
+            count = rule_counts[rid]
+            meta = rules_meta.get(rid, {})
+            level = meta.get("level", "?")
+            desc = meta.get("description", "Unknown")
+            lines.append(f"  <b>{esc(str(rid))}</b> (L{level}) \u00d7{count}")
+            lines.append(f"  {esc(str(desc))}")
+
+    # Critical alerts (Level 10+)
+    result = indexer_search(
+        {
+            "size": 0,
+            "query": {
+                "bool": {
+                    "must": [{"range": {"timestamp": {"gte": "now-24h"}}}, {"range": {"rule.level": {"gte": 10}}}]
+                }
+            },
+            "aggs": {
+                "by_level": {
+                    "terms": {"field": "rule.level", "size": 10, "order": {"_key": "desc"}},
+                    "aggs": {"by_rule": {"terms": {"field": "rule.description", "size": 3}}},
+                }
+            },
+        }
+    )
+    buckets = result.get("aggregations", {}).get("by_level", {}).get("buckets", [])
+
+    if buckets:
+        lines.append("\n<b>Critical Alerts (24h)</b>")
+        for b in buckets:
+            level = b.get("key", "?")
+            count = b.get("doc_count", 0)
+            rule_b = b.get("by_rule", {}).get("buckets", [])
+            lines.append(f"  L{level} \u00d7{count}")
+            for rb in rule_b:
+                lines.append(f"    {esc(rb.get('key', 'Unknown'))} (\u00d7{rb.get('doc_count', 0)})")
+    else:
+        lines.append("\nNo Level 10+ alerts in 24h \u2705")
+
+    # Top triggered rules
+    top_result = indexer_search(
+        {
+            "size": 0,
+            "query": {"range": {"timestamp": {"gte": "now-24h"}}},
+            "aggs": {
+                "top_rules": {
+                    "terms": {"field": "rule.id", "size": 10, "order": {"_count": "desc"}},
+                    "aggs": {
+                        "rule_desc": {"terms": {"field": "rule.description", "size": 1}},
+                        "rule_level": {"terms": {"field": "rule.level", "size": 1}},
+                    },
+                }
+            },
+        }
+    )
+    top_buckets = top_result.get("aggregations", {}).get("top_rules", {}).get("buckets", [])
+
+    if top_buckets:
+        lines.append("\n<b>Top Triggered Rules (24h)</b>")
+        for bucket in top_buckets:
+            rule_id = bucket.get("key", "?")
+            count = bucket.get("doc_count", 0)
+            desc_b = bucket.get("rule_desc", {}).get("buckets", [])
+            level_b = bucket.get("rule_level", {}).get("buckets", [])
+            desc = desc_b[0].get("key", "N/A") if desc_b else "N/A"
+            level = level_b[0].get("key", "?") if level_b else "?"
+            lines.append(f"  <b>{esc(str(rule_id))}</b> (L{level}) \u00d7{count} — {esc(str(desc))}")
+
+    send_message(chat_id, "\n".join(lines))
+
+
+def cmd_bitcoin(chat_id: str) -> None:
+    cfg = get_cfg()
+    if not cfg["integrations"]["bitcoin"]["enabled"]:
+        send_message(chat_id, "Bitcoin integration is disabled")
+        return
+
+    lines = ["<b>\u20bf Bitcoin Detail</b>\n"]
+
+    # Block height
+    local_height = mempool_get("/api/blocks/tip/height")
+    public_height = mempool_get("/api/blocks/tip/height", public=True)
+    lag_threshold = cfg["digest"]["bitcoin_lag_warning_blocks"]
+    local_ok = _valid_height(local_height)
+    public_ok = _valid_height(public_height)
+
+    if local_ok and public_ok:
+        lag = int(public_height) - int(local_height)
+        if lag > lag_threshold:
+            lines.append(f"\U0001f7e1 Block height: {local_height} (lagging {lag} blocks)")
+        else:
+            lines.append(f"\U0001f7e2 Block height: {local_height}")
+        lines.append(f"Public height: {public_height}")
+    elif public_ok:
+        lines.append(f"\U0001f7e1 Block height: {public_height} (local node unreachable)")
+    elif local_ok:
+        lines.append(f"\U0001f7e1 Block height: {local_height} (public API unreachable)")
+    else:
+        lines.append("\U0001f534 Block height: unavailable")
+
+    # Fees
+    fees = mempool_get("/api/v1/fees/recommended")
+    if isinstance(fees, dict):
+        lines.append("")
+        lines.append("<b>Mempool Fees</b> (sat/vB)")
+        lines.append(f"  Fastest:  {fees.get('fastestFee')}")
+        lines.append(f"  30 min:   {fees.get('halfHourFee')}")
+        lines.append(f"  1 hour:   {fees.get('hourFee')}")
+        eco = fees.get("economyFee")
+        if eco:
+            lines.append(f"  Economy:  {eco}")
+        minimum = fees.get("minimumFee")
+        if minimum:
+            lines.append(f"  Minimum:  {minimum}")
+
+    # LND
+    if cfg["integrations"]["lnd"]["enabled"]:
+        lnd_info = lnd_get("/v1/getinfo")
+        if lnd_info:
+            lines.append("")
+            lines.append("<b>Lightning (LND)</b>")
+            synced = "\U0001f7e2 yes" if lnd_info.get("synced_to_chain") else "\U0001f7e1 no"
+            lines.append(f"Synced: {synced}")
+            alias = lnd_info.get("alias", "")
+            if alias:
+                lines.append(f"Alias: {esc(alias)}")
+            version = lnd_info.get("version", "")
+            if version:
+                lines.append(f"Version: {esc(version)}")
+            peers = lnd_info.get("num_peers", 0)
+            lines.append(f"Peers: {peers}")
+            block_height = lnd_info.get("block_height", "")
+            if block_height:
+                lines.append(f"LND block height: {block_height}")
+        else:
+            lines.append("\n\U0001f534 LND unreachable")
+
+        # Channel detail
+        channels = lnd_get("/v1/channels")
+        ch_list = channels.get("channels", []) if channels else []
+        if ch_list:
+            emoji, label = score_channel_health(ch_list)
+            lines.append(f"\nChannels: {emoji} {label}")
+            for ch in ch_list:
+                cap = int(ch.get("capacity", 0))
+                local = int(ch.get("local_balance", 0))
+                active = "\U0001f7e2" if ch.get("active") else "\U0001f534"
+                alias = ch.get("peer_alias", ch.get("remote_pubkey", "?")[:12])
+                ratio = (local / cap * 100) if cap > 0 else 0
+                lines.append(f"  {active} {esc(str(alias))}")
+                lines.append(f"    {local:,} / {cap:,} sat ({ratio:.0f}% local)")
+
+        # Wallet balance
+        balance = lnd_get("/v1/balance/channels")
+        if balance:
+            lb = balance.get("local_balance", 0)
+            local_bal = int(lb.get("sat", 0)) if isinstance(lb, dict) else int(lb)
+            rb = balance.get("remote_balance", 0)
+            remote_bal = int(rb.get("sat", 0)) if isinstance(rb, dict) else int(rb)
+            if local_bal or remote_bal:
+                lines.append("\n<b>Channel Balance</b>")
+                lines.append(f"  Local:  {local_bal:,} sat")
+                lines.append(f"  Remote: {remote_bal:,} sat")
+
+    send_message(chat_id, "\n".join(lines))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -990,6 +1241,9 @@ COMMANDS = {
     "/help": lambda c, a: cmd_help(c),
     "/start": lambda c, a: cmd_help(c),
     "/status": lambda c, a: cmd_digest(c, title="\U0001f4cb Status Report"),
+    "/system": lambda c, a: cmd_system(c),
+    "/security": lambda c, a: cmd_security(c),
+    "/bitcoin": lambda c, a: cmd_bitcoin(c),
     "/event": cmd_event,
     "/agents": lambda c, a: cmd_agents(c),
     "/alerts": lambda c, a: cmd_alerts(c),

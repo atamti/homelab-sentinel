@@ -222,7 +222,75 @@ class TestCmdServices:
         commander._mock_getoutput.return_value = "NAMES  STATUS\nnginx  Up 2 days"
         commander.cmd_services("123")
         text = commander._mock_post.call_args[1]["json"]["text"]
-        assert "Docker Services" in text
+        assert "Services" in text
+        assert "Docker" in text
+
+
+class TestCmdSystem:
+    def test_sends_system_detail(self, commander):
+        commander._mock_getoutput.side_effect = [
+            # get_system_stats calls:
+            "0.50 0.40 0.30",  # loadavg
+            "4",  # nproc
+            "45",  # mem_pct
+            "42",  # disk_pct
+            "45000",  # thermal zone temp
+            "up 5 days",  # uptime -p
+            "1.5G/4.0G",  # free -h memory
+            "42% used (20G/50G)",  # df -h disk
+            "3",  # iptables banned
+            # cmd_system specific calls:
+            "Filesystem  Size  Used Avail Use% Mounted\n/dev/sda1    50G   20G   28G  42% /",  # df
+            "  1234 10.0  2.0 python3\n  5678  5.0  1.0 node",  # ps top procs
+        ]
+        commander.cmd_system("123")
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "System Detail" in text
+        assert "Load" in text
+        assert "Memory" in text
+        assert "Top Processes" in text
+
+
+class TestCmdSecurity:
+    def test_sends_security_detail(self, commander):
+        commander._mock_getoutput.side_effect = [
+            # get_system_stats calls:
+            "0.50 0.40 0.30",  # loadavg
+            "4",  # nproc
+            "45",  # mem_pct
+            "42",  # disk_pct
+            "45000",  # thermal zone temp
+            "up 5 days",  # uptime -p
+            "1.5G/4.0G",  # free -h memory
+            "42% used (20G/50G)",  # df -h disk
+            "3",  # iptables banned
+            # parse_ban_history:
+            "",  # ban history grep
+        ]
+        # Mock wazuh token + indexer searches
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"aggregations": {"by_level": {"buckets": []}, "top_rules": {"buckets": []}}}
+        commander._mock_post.return_value = mock_resp
+        commander.cmd_security("123")
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
+        assert len(sent) >= 1
+        text = sent[0][1]["json"]["text"]
+        assert "Security Detail" in text
+        assert "Active bans" in text
+
+
+class TestCmdBitcoin:
+    def test_bitcoin_disabled(self, commander):
+        from sentinel.config import _DEFAULTS, _deep_merge, reload_config
+
+        reload_config()
+        test_cfg = _deep_merge(_DEFAULTS, {"integrations": {"bitcoin": {"enabled": False}}})
+        import sentinel.config
+
+        sentinel.config.cfg = test_cfg
+        commander.cmd_bitcoin("123")
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "disabled" in text
 
 
 class TestCmdBlocked:
