@@ -14,3 +14,6 @@ test:  ## Run pytest
 format:  ## Auto-format with ruff
 	ruff format .
 	ruff check --fix .
+
+register:  ## Register bot commands with Telegram autocomplete
+	python telegram-commander.py --register-commands

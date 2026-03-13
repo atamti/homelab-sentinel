@@ -1243,6 +1243,31 @@ def cmd_shutdown(chat_id: str, arg: str) -> None:
 # Update Dispatcher
 # ══════════════════════════════════════════════════════════════════════════════
 
+BOT_MENU = [
+    ("status", "Full overview"),
+    ("system", "Detailed system metrics"),
+    ("security", "Security deep dive"),
+    ("agents", "Agent list & status"),
+    ("services", "Docker & service status"),
+    ("bitcoin", "Bitcoin & Lightning detail"),
+    ("alerts", "Recent alerts (Level 8+)"),
+    ("top", "Top triggered rules (24h)"),
+    ("blocked", "Blocked IPs & ban history"),
+    ("event", "Alert detail (TOTP)"),
+    ("disk", "Disk usage"),
+    ("uptime", "System uptime"),
+    ("block", "Block an IP (TOTP)"),
+    ("unblock", "Unblock an IP (TOTP)"),
+    ("closeport", "Close a UFW port (TOTP)"),
+    ("openport", "Open a UFW port (TOTP)"),
+    ("lockdown", "Deny all except SSH (TOTP)"),
+    ("restore", "Restore normal firewall (TOTP)"),
+    ("restart", "Restart service or agent (TOTP)"),
+    ("syscheck", "Run integrity scan (TOTP)"),
+    ("shutdown", "Shutdown server (TOTP)"),
+    ("help", "Show command menu"),
+]
+
 COMMANDS = {
     "/help": lambda c, a: cmd_help(c),
     "/start": lambda c, a: cmd_help(c),
@@ -1269,6 +1294,26 @@ COMMANDS = {
     "/syscheck": cmd_syscheck,
     "/shutdown": cmd_shutdown,
 }
+
+
+def register_commands() -> bool:
+    """Register bot commands with Telegram for autocomplete menu.
+
+    Returns True on success, False on failure.
+    """
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands"
+    commands = [{"command": cmd, "description": desc} for cmd, desc in BOT_MENU]
+    try:
+        resp = requests.post(url, json={"commands": commands}, timeout=10)
+        body = resp.json()
+        if body.get("ok"):
+            log(f"register: {len(commands)} commands registered with Telegram")
+            return True
+        log(f"register: failed — {body.get('description', resp.status_code)}")
+        return False
+    except Exception as exc:
+        log(f"register: error — {exc}")
+        return False
 
 
 def process_update(update: dict) -> None:
@@ -1355,4 +1400,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--register-commands":
+        ok = register_commands()
+        sys.exit(0 if ok else 1)
     main()

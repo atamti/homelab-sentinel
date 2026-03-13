@@ -87,6 +87,33 @@ class TestSendMessage:
         assert commander._mock_post.call_count == 3
 
 
+class TestRegisterCommands:
+    def test_registers_successfully(self, commander):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"ok": True}
+        commander._mock_post.return_value = mock_resp
+        assert commander.register_commands() is True
+        payload = commander._mock_post.call_args[1]["json"]
+        assert "commands" in payload
+        cmds = {c["command"] for c in payload["commands"]}
+        assert "status" in cmds
+        assert "system" in cmds
+        assert "security" in cmds
+        assert "bitcoin" in cmds
+        assert "help" in cmds
+
+    def test_returns_false_on_api_error(self, commander):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"ok": False, "description": "Unauthorized"}
+        commander._mock_post.return_value = mock_resp
+        assert commander.register_commands() is False
+
+    def test_bot_menu_matches_commands(self, commander):
+        """Every BOT_MENU entry should have a corresponding COMMANDS handler."""
+        for cmd, _desc in commander.BOT_MENU:
+            assert f"/{cmd}" in commander.COMMANDS, f"/{cmd} in BOT_MENU but not in COMMANDS"
+
+
 # ── TOTP ─────────────────────────────────────────────────────────────────────
 
 
