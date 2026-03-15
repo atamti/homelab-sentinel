@@ -31,32 +31,40 @@ active_response:
 
 # ── Telegram commands ────────────────────────────────────────────────────────
 commands:
-  # Commands accepted by the bot (remove to disable)
+  # Commands accepted by the bot, organized by section.
+  # Remove a command to disable it; remove a whole section to disable the group.
   enabled:
-    - help
-    - start
-    - status
-    - system
-    - security
-    - bitcoin
-    - event
-    - alerts
-    - top
-    - blocked
-    - agents
-    - disk
-    - uptime
-    - services
-    - digest
-    - block
-    - unblock
-    - closeport
-    - openport
-    - lockdown
-    - restore
-    - restart
-    - syscheck
-    - shutdown
+    system:
+      - status
+      - system
+      - disk
+      - uptime
+    security:
+      - security
+      - alerts
+      - top
+      - blocked
+      - event
+    agents:
+      - agents
+    services:
+      - services
+    bitcoin:
+      - bitcoin
+    active_response:
+      - block
+      - unblock
+      - closeport
+      - openport
+      - lockdown
+      - restore
+      - restart
+      - syscheck
+      - shutdown
+    general:
+      - help
+      - start
+      - digest
   # Commands that require a TOTP code
   totp_required:
     - block

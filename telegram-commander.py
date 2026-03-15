@@ -1335,7 +1335,12 @@ def process_update(update: dict) -> None:
     handler = COMMANDS.get(command)
     if handler:
         cmd_name = command.lstrip("/")
-        enabled = get_cfg()["commands"]["enabled"]
+        enabled_sections = get_cfg()["commands"]["enabled"]
+        # Flatten grouped dict into a set, supporting legacy flat lists too
+        if isinstance(enabled_sections, dict):
+            enabled = {c for cmds in enabled_sections.values() for c in cmds}
+        else:
+            enabled = set(enabled_sections)
         if cmd_name not in enabled:
             send_message(chat_id, f"Command disabled: {command}")
             return
