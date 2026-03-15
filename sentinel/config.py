@@ -24,6 +24,8 @@ _DEFAULTS = {
     },
     "active_response": {
         "ban_log": "/var/ossec/logs/ban-history.log",
+        "ban_state_file": "/var/ossec/logs/active-bans.json",
+        "ban_timeout_seconds": 600,
         "notify_on_expire": True,
         "extra_whitelist": [],
     },

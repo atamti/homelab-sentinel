@@ -24,6 +24,10 @@ alerts:
 # ── Active response ──────────────────────────────────────────────────────────
 active_response:
   ban_log: /var/ossec/logs/ban-history.log
+  # JSON file tracking active bans for auto-expiry sweep
+  ban_state_file: /var/ossec/logs/active-bans.json
+  # Default ban duration in seconds (safety-net TTL for sweep/at-job)
+  ban_timeout_seconds: 600
   # Send Telegram notification when a ban expires
   notify_on_expire: true
   # IPs that should never be banned (in addition to Wazuh whitelist)

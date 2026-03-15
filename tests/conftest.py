@@ -93,6 +93,7 @@ def notify_ban(monkeypatch, tmp_path):
 
     ban_log = tmp_path / "ban-history.log"
     ban_log.touch()
+    ban_state = tmp_path / "active-bans.json"
 
     with patch("requests.post") as mock_post:
         from sentinel.config import _DEFAULTS, _deep_merge, reload_config
@@ -100,12 +101,21 @@ def notify_ban(monkeypatch, tmp_path):
         reload_config()
         mod = _import_script("notify-ban.py", monkeypatch)
         # Override ban_log path via config to use temp file
-        test_cfg = _deep_merge(_DEFAULTS, {"active_response": {"ban_log": str(ban_log)}})
+        test_cfg = _deep_merge(
+            _DEFAULTS,
+            {
+                "active_response": {
+                    "ban_log": str(ban_log),
+                    "ban_state_file": str(ban_state),
+                }
+            },
+        )
         monkeypatch.setattr("sentinel.config.cfg", test_cfg)
         mod.DEBUG_LOG = str(tmp_path / "debug.log")
         mod.AR_ERROR_LOG = str(tmp_path / "ar-errors.log")
         mod._mock_post = mock_post
         mod._ban_log = str(ban_log)
+        mod._ban_state = str(ban_state)
         yield mod
 
 

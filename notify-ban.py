@@ -22,6 +22,7 @@ Environment variables are loaded from /etc/homelab-sentinel.env
 """
 
 import contextlib
+import fcntl
 import json
 import os
 import subprocess
@@ -126,6 +127,182 @@ def is_already_banned(ip: str) -> bool:
     except Exception as e:
         debug_log(f"iptables -C check failed for {ip}: {e}")
         return False  # fail open — proceed with handshake
+
+
+# ── Ban state tracking ───────────────────────────────────────────────────────
+
+
+def _state_path() -> str:
+    """Return the path to the active-bans JSON state file."""
+    try:
+        from sentinel.config import get_cfg
+
+        return get_cfg()["active_response"]["ban_state_file"]
+    except Exception:
+        return "/var/ossec/logs/active-bans.json"
+
+
+def load_state() -> dict:
+    """Load active-bans state from disk.  Returns {} on any error."""
+    path = _state_path()
+    try:
+        with open(path) as f:
+            fcntl.flock(f, fcntl.LOCK_SH)
+            data = json.load(f)
+            fcntl.flock(f, fcntl.LOCK_UN)
+            return data
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    except Exception as e:
+        debug_log(f"load_state error: {e}")
+        return {}
+
+
+def save_state(state: dict) -> None:
+    """Atomically write active-bans state to disk."""
+    path = _state_path()
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            json.dump(state, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+            fcntl.flock(f, fcntl.LOCK_UN)
+        os.replace(tmp, path)
+    except Exception as e:
+        _log_error(f"save_state error: {e}")
+        debug_log(f"save_state error: {e}")
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+
+
+def record_ban(ip: str, rule_id: str, ttl: int | None = None) -> None:
+    """Record a ban in the state file and schedule an at-job for auto-unban."""
+    if ttl is None:
+        try:
+            from sentinel.config import get_cfg
+
+            ttl = get_cfg()["active_response"]["ban_timeout_seconds"]
+        except Exception:
+            ttl = 600
+
+    state = load_state()
+    state[ip] = {
+        "banned_at": time.time(),
+        "ttl": ttl,
+        "rule_id": rule_id,
+    }
+    save_state(state)
+    debug_log(f"state: recorded ban for {ip} (ttl={ttl}s)")
+
+    _schedule_at_unban(ip, ttl)
+
+
+def remove_ban_record(ip: str) -> None:
+    """Remove an IP from the state file."""
+    state = load_state()
+    if ip in state:
+        del state[ip]
+        save_state(state)
+        debug_log(f"state: removed {ip}")
+
+
+def _schedule_at_unban(ip: str, ttl: int) -> None:
+    """Best-effort: schedule an at-job to auto-unban after ttl seconds."""
+    try:
+        script = os.path.abspath(__file__)
+        minutes = max(1, (ttl + 59) // 60)  # round up to nearest minute
+        at_cmd = f"python3 {script} --unban {ip}\n"
+        subprocess.run(
+            ["at", f"now + {minutes} minutes"],
+            input=at_cmd,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        debug_log(f"at: scheduled unban for {ip} in {minutes}m")
+    except Exception as e:
+        # at(1) may not be installed — the sweep is the real safety net
+        debug_log(f"at: scheduling failed (non-fatal): {e}")
+
+
+def sweep_expired_bans() -> list[str]:
+    """Unban any IPs whose TTL has expired.  Returns list of IPs unbanned."""
+    state = load_state()
+    now = time.time()
+    expired = []
+
+    for ip, info in list(state.items()):
+        banned_at = info.get("banned_at", 0)
+        ttl = info.get("ttl", 600)
+        if now - banned_at >= ttl:
+            expired.append(ip)
+
+    if not expired:
+        debug_log("sweep: no expired bans")
+        return []
+
+    unbanned = []
+    for ip in expired:
+        if unban_ip(ip):
+            unbanned.append(ip)
+            rule_id = state[ip].get("rule_id", "?")
+            write_ban_log(ip, rule_id, action="Unbanned (sweep)")
+        del state[ip]
+
+    save_state(state)
+
+    # Best-effort notification
+    if unbanned:
+        try:
+            from sentinel.config import env, get_cfg, load_env_file
+
+            load_env_file()
+            ar_cfg = get_cfg()["active_response"]
+            if ar_cfg.get("notify_on_expire", True):
+                full_log_chat = env("TELEGRAM_FULL_LOG_CHAT_ID")
+                ip_list = ", ".join(f"<code>{ip}</code>" for ip in unbanned)
+                message = f"\U0001f9f9 <b>Sweep: unbanned {len(unbanned)} expired IP(s)</b>\n{ip_list}"
+                send_telegram(full_log_chat, message)
+        except Exception as exc:
+            debug_log(f"sweep notification error: {exc}")
+
+    debug_log(f"sweep: unbanned {len(unbanned)} IP(s)")
+    return unbanned
+
+
+def cli_unban(ip: str) -> None:
+    """CLI handler for --unban: remove iptables rule, clean state, log, notify."""
+    from sentinel.validate import validated_ip
+
+    ip = validated_ip(ip)
+    if not ip:
+        print(f"Invalid IP: {sys.argv[2]}")
+        sys.exit(1)
+
+    state = load_state()
+    rule_id = state.get(ip, {}).get("rule_id", "?")
+
+    unban_ip(ip)
+    remove_ban_record(ip)
+    write_ban_log(ip, rule_id, action="Unbanned (at-job)")
+
+    try:
+        from sentinel.config import env, get_cfg, load_env_file
+
+        load_env_file()
+        ar_cfg = get_cfg()["active_response"]
+        if ar_cfg.get("notify_on_expire", True):
+            full_log_chat = env("TELEGRAM_FULL_LOG_CHAT_ID")
+            message = (
+                f"\u2705 <b>Auto-expiry: Unbanned</b>\n"
+                f"<b>IP:</b> <code>{ip}</code>\n"
+                f"<b>Rule:</b> {rule_id}"
+            )
+            send_telegram(full_log_chat, message)
+    except Exception as exc:
+        debug_log(f"cli_unban notification error: {exc}")
 
 
 def deduplicate_iptables() -> int:
@@ -305,6 +482,7 @@ def _notify(action: str, ip: str, data: dict) -> None:
             return
 
         write_ban_log(ip, rule_id)
+        record_ban(ip, rule_id)
 
         message = (
             f"🔨 <b>Active Response: Banned</b>\n"
@@ -320,6 +498,7 @@ def _notify(action: str, ip: str, data: dict) -> None:
 
     # ── Handle delete (ban expiry) ───────────────────────────────────
     elif action == "delete":
+        remove_ban_record(ip)
         write_ban_log(ip, rule_id, action="Unbanned")
 
         if ar_cfg.get("notify_on_expire", True):
@@ -336,4 +515,11 @@ def _notify(action: str, ip: str, data: dict) -> None:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--sweep":
+        expired = sweep_expired_bans()
+        print(f"Swept {len(expired)} expired ban(s)")
+        sys.exit(0)
+    if len(sys.argv) > 2 and sys.argv[1] == "--unban":
+        cli_unban(sys.argv[2])
+        sys.exit(0)
     main()

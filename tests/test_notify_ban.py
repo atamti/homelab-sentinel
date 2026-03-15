@@ -324,3 +324,162 @@ class TestDeduplicateIptables:
             mock_stdin.readline.return_value = "NOT JSON"
             with pytest.raises(SystemExit):
                 notify_ban.main()
+
+
+# ── Ban state tracking ───────────────────────────────────────────────────────
+
+
+class TestBanState:
+    def test_load_empty_state(self, notify_ban):
+        assert notify_ban.load_state() == {}
+
+    def test_save_and_load(self, notify_ban):
+        notify_ban.save_state({"1.2.3.4": {"banned_at": 100, "ttl": 600, "rule_id": "5763"}})
+        state = notify_ban.load_state()
+        assert "1.2.3.4" in state
+        assert state["1.2.3.4"]["ttl"] == 600
+
+    def test_record_ban_writes_state(self, notify_ban):
+        with patch.object(notify_ban, "_schedule_at_unban"):
+            notify_ban.record_ban("10.0.0.1", "5763", ttl=300)
+        state = notify_ban.load_state()
+        assert "10.0.0.1" in state
+        assert state["10.0.0.1"]["ttl"] == 300
+        assert state["10.0.0.1"]["rule_id"] == "5763"
+
+    def test_record_ban_schedules_at(self, notify_ban):
+        with patch.object(notify_ban, "_schedule_at_unban") as mock_at:
+            notify_ban.record_ban("10.0.0.2", "5710", ttl=600)
+        mock_at.assert_called_once_with("10.0.0.2", 600)
+
+    def test_remove_ban_record(self, notify_ban):
+        with patch.object(notify_ban, "_schedule_at_unban"):
+            notify_ban.record_ban("10.0.0.3", "100")
+        notify_ban.remove_ban_record("10.0.0.3")
+        state = notify_ban.load_state()
+        assert "10.0.0.3" not in state
+
+    def test_remove_nonexistent_is_noop(self, notify_ban):
+        notify_ban.remove_ban_record("99.99.99.99")  # should not raise
+
+
+class TestScheduleAt:
+    def test_calls_at_command(self, notify_ban):
+        with patch("subprocess.run") as mock_run:
+            notify_ban._schedule_at_unban("1.2.3.4", 600)
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert args == ["at", "now + 10 minutes"]
+        assert "--unban 1.2.3.4" in mock_run.call_args[1]["input"]
+
+    def test_rounds_up_minutes(self, notify_ban):
+        with patch("subprocess.run") as mock_run:
+            notify_ban._schedule_at_unban("1.2.3.4", 61)
+        args = mock_run.call_args[0][0]
+        assert args == ["at", "now + 2 minutes"]
+
+    def test_minimum_one_minute(self, notify_ban):
+        with patch("subprocess.run") as mock_run:
+            notify_ban._schedule_at_unban("1.2.3.4", 5)
+        args = mock_run.call_args[0][0]
+        assert args == ["at", "now + 1 minutes"]
+
+    def test_swallows_error_when_at_missing(self, notify_ban):
+        with patch("subprocess.run", side_effect=FileNotFoundError("at not found")):
+            notify_ban._schedule_at_unban("1.2.3.4", 600)  # should not raise
+
+
+class TestSweepExpiredBans:
+    def test_unbans_expired_ips(self, notify_ban):
+        # Plant a ban that expired 10 seconds ago
+        notify_ban.save_state({
+            "1.1.1.1": {"banned_at": time.time() - 700, "ttl": 600, "rule_id": "5763"},
+        })
+        with patch.object(notify_ban, "unban_ip", return_value=True) as mock_unban:
+            result = notify_ban.sweep_expired_bans()
+        mock_unban.assert_called_once_with("1.1.1.1")
+        assert result == ["1.1.1.1"]
+        # State file should be empty now
+        assert notify_ban.load_state() == {}
+
+    def test_keeps_active_bans(self, notify_ban):
+        notify_ban.save_state({
+            "2.2.2.2": {"banned_at": time.time(), "ttl": 600, "rule_id": "100"},
+        })
+        with patch.object(notify_ban, "unban_ip") as mock_unban:
+            result = notify_ban.sweep_expired_bans()
+        mock_unban.assert_not_called()
+        assert result == []
+        assert "2.2.2.2" in notify_ban.load_state()
+
+    def test_mixed_expired_and_active(self, notify_ban):
+        now = time.time()
+        notify_ban.save_state({
+            "3.3.3.3": {"banned_at": now - 1000, "ttl": 600, "rule_id": "A"},
+            "4.4.4.4": {"banned_at": now, "ttl": 600, "rule_id": "B"},
+        })
+        with patch.object(notify_ban, "unban_ip", return_value=True):
+            result = notify_ban.sweep_expired_bans()
+        assert result == ["3.3.3.3"]
+        state = notify_ban.load_state()
+        assert "3.3.3.3" not in state
+        assert "4.4.4.4" in state
+
+    def test_sweep_logs_to_ban_history(self, notify_ban):
+        notify_ban.save_state({
+            "5.5.5.5": {"banned_at": time.time() - 700, "ttl": 600, "rule_id": "5763"},
+        })
+        with patch.object(notify_ban, "unban_ip", return_value=True):
+            notify_ban.sweep_expired_bans()
+        with open(notify_ban._ban_log) as f:
+            content = f.read()
+        assert "Unbanned (sweep) 5.5.5.5" in content
+
+    def test_sweep_sends_telegram(self, notify_ban):
+        notify_ban.save_state({
+            "6.6.6.6": {"banned_at": time.time() - 700, "ttl": 600, "rule_id": "100"},
+        })
+        with patch.object(notify_ban, "unban_ip", return_value=True):
+            notify_ban.sweep_expired_bans()
+        assert notify_ban._mock_post.call_count >= 1
+        text = notify_ban._mock_post.call_args[1]["json"]["text"]
+        assert "Sweep" in text
+        assert "6.6.6.6" in text
+
+    def test_noop_on_empty_state(self, notify_ban):
+        result = notify_ban.sweep_expired_bans()
+        assert result == []
+
+
+class TestMainRecordsBan:
+    """Verify main() records bans in the state file."""
+
+    def test_add_records_ban(self, notify_ban):
+        payload = make_ar_input(action="add", srcip="7.7.7.7", rule_id="5763")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "ban_ip"),
+            patch.object(notify_ban, "is_duplicate", return_value=False),
+            patch.object(notify_ban, "is_already_banned", return_value=False),
+            patch.object(notify_ban, "_schedule_at_unban"),
+        ):
+            mock_stdin.readline.return_value = payload
+            notify_ban.main()
+        state = notify_ban.load_state()
+        assert "7.7.7.7" in state
+        assert state["7.7.7.7"]["rule_id"] == "5763"
+
+    def test_delete_removes_ban_record(self, notify_ban):
+        # Pre-populate state
+        notify_ban.save_state({
+            "8.8.8.8": {"banned_at": time.time(), "ttl": 600, "rule_id": "5710"},
+        })
+        payload = make_ar_input(action="delete", srcip="8.8.8.8", rule_id="5710")
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch.object(notify_ban, "unban_ip"),
+        ):
+            mock_stdin.readline.return_value = payload
+            notify_ban.main()
+        state = notify_ban.load_state()
+        assert "8.8.8.8" not in state
