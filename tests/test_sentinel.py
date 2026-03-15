@@ -51,6 +51,21 @@ class TestConfig:
 
         load_env_file("/nonexistent/path")  # should not raise
 
+    def test_load_env_file_strips_quotes(self, tmp_path, monkeypatch):
+        env_file = tmp_path / "quoted.env"
+        env_file.write_text('DQ_VAR="double-quoted"\nSQ_VAR=\'single-quoted\'\nNO_QUOTE=plain\n')
+        monkeypatch.delenv("DQ_VAR", raising=False)
+        monkeypatch.delenv("SQ_VAR", raising=False)
+        monkeypatch.delenv("NO_QUOTE", raising=False)
+        from sentinel.config import load_env_file
+
+        load_env_file(str(env_file))
+        import os
+
+        assert os.environ["DQ_VAR"] == "double-quoted"
+        assert os.environ["SQ_VAR"] == "single-quoted"
+        assert os.environ["NO_QUOTE"] == "plain"
+
 
 class TestTelegram:
     def test_send_posts_to_api(self):

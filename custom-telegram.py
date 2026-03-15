@@ -70,7 +70,7 @@ def format_alert(alert: dict) -> tuple[str, int, str]:
     agent = alert.get("agent", {})
     level = rule.get("level", 0)
     description = rule.get("description", "N/A")
-    rule_id = rule.get("id", "N/A")
+    rule_id = str(rule.get("id", "N/A"))
     agent_id = agent.get("id", "?")
     timestamp = alert.get("timestamp", "N/A")
     src_ip = alert.get("data", {}).get("srcip", "")

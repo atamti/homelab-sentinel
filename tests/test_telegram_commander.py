@@ -533,3 +533,43 @@ class TestCmdSyscheck:
         sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         texts = [c[1]["json"]["text"] for c in sent]
         assert any("still running" in t for t in texts)
+
+
+class TestCmdBlockedIpBoundary:
+    """Verify IP matching uses word boundaries, not substring."""
+
+    def test_ip_lookup_no_false_positive(self, commander):
+        from unittest.mock import MagicMock
+
+        ipt_result = MagicMock()
+        # Only 11.2.3.4 is banned, NOT 1.2.3.4
+        ipt_result.stdout = "Chain INPUT (policy ACCEPT)\nDROP  all  -- 11.2.3.4  0.0.0.0/0\n"
+        commander._mock_run.return_value = ipt_result
+        with open(commander._ban_log, "w") as f:
+            f.write("2026/03/09 12:00:00 Banned 11.2.3.4 (Rule 5710)\n")
+        commander.cmd_blocked("123", "1.2.3.4")
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "Not currently banned" in text
+        assert "No history found" in text
+
+
+class TestDigestState:
+    """Verify digest state persistence across restarts."""
+
+    def test_write_and_read(self, commander, tmp_path):
+        state_file = tmp_path / "digest-sent"
+        commander.DIGEST_STATE_FILE = str(state_file)
+        date_tuple = (2026, 3, 14)
+        commander._write_digest_state(date_tuple)
+        result = commander._read_digest_state()
+        assert result == date_tuple
+
+    def test_read_missing_file(self, commander, tmp_path):
+        commander.DIGEST_STATE_FILE = str(tmp_path / "nonexistent")
+        assert commander._read_digest_state() is None
+
+    def test_read_corrupt_file(self, commander, tmp_path):
+        state_file = tmp_path / "digest-sent"
+        state_file.write_text("garbage")
+        commander.DIGEST_STATE_FILE = str(state_file)
+        assert commander._read_digest_state() is None

@@ -820,12 +820,13 @@ def cmd_blocked(chat_id: str, arg: str = "") -> None:
             ["iptables", "-L", "INPUT", "-n"],
             capture_output=True, text=True,
         )
-        current = "\n".join(line for line in result.stdout.splitlines() if "DROP" in line and ip in line)
+        ip_re = re.compile(r"\b" + re.escape(ip) + r"\b")
+        current = "\n".join(line for line in result.stdout.splitlines() if "DROP" in line and ip_re.search(line))
         ban_log = get_cfg()["active_response"]["ban_log"]
         history = ""
         try:
             with open(ban_log) as f:
-                history = "\n".join(line.rstrip() for line in f if ip in line)[-2000:]
+                history = "\n".join(line.rstrip() for line in f if ip_re.search(line))[-2000:]
         except FileNotFoundError:
             pass
         send_message(
@@ -1373,10 +1374,34 @@ def process_update(update: dict) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+DIGEST_STATE_FILE = os.path.join(os.path.dirname(LOG_FILE), ".digest-sent")
+
+
+def _read_digest_state() -> tuple | None:
+    """Read persisted digest date from disk."""
+    try:
+        with open(DIGEST_STATE_FILE) as f:
+            parts = f.read().strip().split(",")
+            if len(parts) == 3:
+                return (int(parts[0]), int(parts[1]), int(parts[2]))
+    except (FileNotFoundError, ValueError):
+        pass
+    return None
+
+
+def _write_digest_state(date_tuple: tuple) -> None:
+    """Persist digest date to disk so restarts don't re-send."""
+    try:
+        with open(DIGEST_STATE_FILE, "w") as f:
+            f.write(f"{date_tuple[0]},{date_tuple[1]},{date_tuple[2]}")
+    except OSError:
+        pass
+
+
 def main() -> None:
     log("commander: starting")
     offset = 0
-    digest_sent = None
+    digest_sent = _read_digest_state()
     running = True
 
     def _shutdown(signum, frame):
@@ -1404,6 +1429,7 @@ def main() -> None:
                 except Exception:
                     log(f"digest error: {traceback.format_exc()}")
                 digest_sent = today
+                _write_digest_state(today)
 
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
             r = requests.get(url, params={"offset": offset, "timeout": 30}, timeout=35)

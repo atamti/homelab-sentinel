@@ -225,7 +225,7 @@ def load_env_file(path: str = ENV_FILE) -> None:
                     continue
                 key, _, value = line.partition("=")
                 key = key.strip()
-                value = value.strip()
+                value = value.strip().strip('"').strip("'")
                 if key and key not in os.environ:
                     os.environ[key] = value
     except FileNotFoundError:
