@@ -704,10 +704,9 @@ def cmd_agents(chat_id: str) -> None:
         name = a.get("name", "unknown")
         display = agent_alias(name)
         agent_id = a.get("id", "?")
-        ip = a.get("ip", "?")
         os_name = a.get("os", {}).get("name", "?")
         text += f"{emoji} <b>{esc(display)}</b> (ID: {agent_id})\n"
-        text += f"   IP: <code>{ip}</code> | OS: {esc(os_name)}\n"
+        text += f"   OS: {esc(os_name)}\n"
 
     send_message(chat_id, text)
 
