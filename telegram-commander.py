@@ -127,11 +127,6 @@ def get_lnd_headers() -> dict:
     return {"Grpc-Metadata-macaroon": macaroon}
 
 
-def _alert_config() -> dict:
-    """Return the alert_output config section."""
-    return get_cfg().get("alert_output", {})
-
-
 def _bitcoin_config() -> dict:
     """Return the bitcoin config section."""
     return get_cfg().get("bitcoin", {})
@@ -317,15 +312,27 @@ def get_system_stats() -> dict:
 def parse_ban_history() -> dict[str, int]:
     """Parse 24h ban history log and return {rule_id: count}."""
     ban_log = get_cfg()["active_response"]["ban_log"]
-    ar_log = subprocess.getoutput(
-        f"grep 'Banned' {ban_log} | awk -v d=\"$(date -d '24 hours ago' '+%Y/%m/%d %H:%M:%S')\" '$0 > d'"
-    )
+    cutoff = time.time() - 86400
     rule_counts: dict[str, int] = {}
-    for line in ar_log.splitlines():
-        match = re.search(r"\(Rule (\w+)\)", line)
-        if match:
-            rid = match.group(1)
-            rule_counts[rid] = rule_counts.get(rid, 0) + 1
+    try:
+        with open(ban_log) as f:
+            for line in f:
+                if "Banned" not in line:
+                    continue
+                # Lines: "2026/03/14 06:30:00 Banned 1.2.3.4 (Rule 5763)"
+                ts_str = line[:19]
+                try:
+                    ts = time.mktime(time.strptime(ts_str, "%Y/%m/%d %H:%M:%S"))
+                except ValueError:
+                    continue
+                if ts < cutoff:
+                    continue
+                match = re.search(r"\(Rule (\w+)\)", line)
+                if match:
+                    rid = match.group(1)
+                    rule_counts[rid] = rule_counts.get(rid, 0) + 1
+    except FileNotFoundError:
+        pass
     return rule_counts
 
 
@@ -395,6 +402,73 @@ def _rag(value: float, amber: float, red: float) -> str:
     return "\U0001f7e2"
 
 
+def format_system_rag_lines(stats: dict, th: dict, *, compact: bool = False) -> list[str]:
+    """Return RAG-colored system stats lines.
+
+    compact=True omits the section header and collapses all-green output.
+    """
+    load_amber = th["load_per_core_amber"] * stats["nproc"]
+    load_red = th["load_per_core_red"] * stats["nproc"]
+    load_rag = _rag(stats["load_1m"], load_amber, load_red)
+    mem_rag = _rag(stats["mem_pct"], th["memory_amber"], th["memory_red"])
+    disk_rag = _rag(stats["disk_pct"], th["disk_amber"], th["disk_red"])
+    rags = [load_rag, mem_rag, disk_rag]
+
+    temp_rag = None
+    if stats["cpu_temp"] is not None:
+        temp_rag = _rag(stats["cpu_temp"], th["cpu_temp_amber"], th["cpu_temp_red"])
+        rags.append(temp_rag)
+
+    lines: list[str] = []
+    all_green = all(r == "\U0001f7e2" for r in rags)
+
+    if compact:
+        hdr = "<b>\U0001f5a5  System \U0001f7e2</b>" if all_green else "<b>System \U0001f5a5</b>"
+        lines.append(hdr)
+
+    lines.append(f"Uptime: {esc(stats['uptime'])}")
+    if compact and all_green:
+        lines.append(f"Load: {esc(stats['load'])}")
+        lines.append(f"Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
+        if temp_rag is not None:
+            lines.append(f"CPU temp: {stats['cpu_temp']:.0f}°C")
+        lines.append(f"Disk: {esc(stats['disk'])}")
+    else:
+        lines.append(f"{load_rag} Load: {esc(stats['load'])}")
+        lines.append(f"{mem_rag} Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
+        if temp_rag is not None:
+            lines.append(f"{temp_rag} CPU temp: {stats['cpu_temp']:.0f}°C")
+        lines.append(f"{disk_rag} Disk: {esc(stats['disk'])}")
+    return lines
+
+
+def query_critical_alerts(top_rules_per_level: int = 1) -> list[dict]:
+    """Query OpenSearch for Level 10+ alert aggregations in the last 24h.
+
+    Returns list of bucket dicts with keys: key (level), doc_count, by_rule.
+    """
+    result = indexer_search(
+        {
+            "size": 0,
+            "query": {
+                "bool": {
+                    "must": [
+                        {"range": {"timestamp": {"gte": "now-24h"}}},
+                        {"range": {"rule.level": {"gte": 10}}},
+                    ]
+                }
+            },
+            "aggs": {
+                "by_level": {
+                    "terms": {"field": "rule.level", "size": 10, "order": {"_key": "desc"}},
+                    "aggs": {"by_rule": {"terms": {"field": "rule.description", "size": top_rules_per_level}}},
+                }
+            },
+        }
+    )
+    return result.get("aggregations", {}).get("by_level", {}).get("buckets", [])
+
+
 def _simplify_service_name(name: str) -> str:
     """Strip common Uptime Kuma prefixes and URL parts for cleaner display."""
     for prefix in ("HTTP - ", "HTTPS - ", "TCP Port - ", "Ping - ", "Docker Container - ", "DNS - "):
@@ -421,35 +495,8 @@ def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
     if cfg["digest"]["sections"]["system"]:
         stats = get_system_stats()
         th = cfg["digest"]["thresholds"]
-
-        load_amber = th["load_per_core_amber"] * stats["nproc"]
-        load_red = th["load_per_core_red"] * stats["nproc"]
-        load_rag = _rag(stats["load_1m"], load_amber, load_red)
-        mem_rag = _rag(stats["mem_pct"], th["memory_amber"], th["memory_red"])
-        disk_rag = _rag(stats["disk_pct"], th["disk_amber"], th["disk_red"])
-        rags = [load_rag, mem_rag, disk_rag]
-
-        temp_rag = None
-        if stats["cpu_temp"] is not None:
-            temp_rag = _rag(stats["cpu_temp"], th["cpu_temp_amber"], th["cpu_temp_red"])
-            rags.append(temp_rag)
-
-        all_green = all(r == "\U0001f7e2" for r in rags)
-        hdr = "<b>\U0001f5a5  System \U0001f7e2</b>" if all_green else "<b>System \U0001f5a5</b>"
-        lines.append(hdr)
-        lines.append(f"Uptime: {esc(stats['uptime'])}")
-        if all_green:
-            lines.append(f"Load: {esc(stats['load'])}")
-            lines.append(f"Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
-            if temp_rag is not None:
-                lines.append(f"CPU temp: {stats['cpu_temp']:.0f}°C")
-            lines.append(f"Disk: {esc(stats['disk'])}\n")
-        else:
-            lines.append(f"{load_rag} Load: {esc(stats['load'])}")
-            lines.append(f"{mem_rag} Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
-            if temp_rag is not None:
-                lines.append(f"{temp_rag} CPU temp: {stats['cpu_temp']:.0f}°C")
-            lines.append(f"{disk_rag} Disk: {esc(stats['disk'])}\n")
+        lines.extend(format_system_rag_lines(stats, th, compact=True))
+        lines.append("")
 
     # ── Agents ───────────────────────────────────────────────────────
     if cfg["digest"]["sections"]["agents"]:
@@ -514,23 +561,7 @@ def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
                 lines.append(f"  {esc(str(desc))}")
 
         # Level 10+ by level descending
-        result = indexer_search(
-            {
-                "size": 0,
-                "query": {
-                    "bool": {
-                        "must": [{"range": {"timestamp": {"gte": "now-24h"}}}, {"range": {"rule.level": {"gte": 10}}}]
-                    }
-                },
-                "aggs": {
-                    "by_level": {
-                        "terms": {"field": "rule.level", "size": 10, "order": {"_key": "desc"}},
-                        "aggs": {"by_rule": {"terms": {"field": "rule.description", "size": 1}}},
-                    }
-                },
-            }
-        )
-        buckets = result.get("aggregations", {}).get("by_level", {}).get("buckets", [])
+        buckets = query_critical_alerts(top_rules_per_level=1)
 
         if buckets:
             lines.append("\n<b>Critical Alerts (24h):</b>")
@@ -785,8 +816,18 @@ def cmd_blocked(chat_id: str, arg: str = "") -> None:
         except ValueError:
             send_message(chat_id, f"⛔ Invalid IP address: {esc(arg)}")
             return
-        current = subprocess.getoutput(f"iptables -L INPUT -n | grep DROP | grep -F '{ip}'")
-        history = subprocess.getoutput(f"grep -F '{ip}' /var/ossec/logs/ban-history.log | tail -20")
+        result = subprocess.run(
+            ["iptables", "-L", "INPUT", "-n"],
+            capture_output=True, text=True,
+        )
+        current = "\n".join(line for line in result.stdout.splitlines() if "DROP" in line and ip in line)
+        ban_log = get_cfg()["active_response"]["ban_log"]
+        history = ""
+        try:
+            with open(ban_log) as f:
+                history = "\n".join(line.rstrip() for line in f if ip in line)[-2000:]
+        except FileNotFoundError:
+            pass
         send_message(
             chat_id,
             f"<b>Lookup: <code>{esc(ip)}</code></b>\n\n"
@@ -800,10 +841,19 @@ def cmd_blocked(chat_id: str, arg: str = "") -> None:
     per_page = 20
     skip = (page - 1) * per_page
 
-    current = subprocess.getoutput(f"iptables -L INPUT -n | grep DROP | tail -n +{skip + 1} | head -{per_page}")
-    total = subprocess.getoutput("iptables -L INPUT -n | grep -c DROP").strip()
+    result = subprocess.run(["iptables", "-L", "INPUT", "-n"], capture_output=True, text=True)
+    drop_lines = [line for line in result.stdout.splitlines() if "DROP" in line]
+    total = str(len(drop_lines))
+    current = "\n".join(drop_lines[skip : skip + per_page])
 
-    recent = subprocess.getoutput(f"tail -{per_page + skip} /var/ossec/logs/ban-history.log | head -{per_page}")
+    ban_log = get_cfg()["active_response"]["ban_log"]
+    recent = ""
+    try:
+        with open(ban_log) as f:
+            all_lines = f.read().splitlines()
+            recent = "\n".join(all_lines[-(per_page + skip) :][:per_page])
+    except FileNotFoundError:
+        pass
 
     send_message(chat_id, f"<b>Currently Banned (page {page}, {total} total)</b>\n<pre>{esc(current) or 'None'}</pre>")
     send_message(chat_id, f"<b>Recent Bans (page {page})</b>\n<pre>{esc(recent) or 'None'}</pre>")
@@ -858,22 +908,8 @@ def cmd_system(chat_id: str) -> None:
     cfg = get_cfg()
     th = cfg["digest"]["thresholds"]
 
-    load_amber = th["load_per_core_amber"] * stats["nproc"]
-    load_red = th["load_per_core_red"] * stats["nproc"]
-    load_rag = _rag(stats["load_1m"], load_amber, load_red)
-    mem_rag = _rag(stats["mem_pct"], th["memory_amber"], th["memory_red"])
-    disk_rag = _rag(stats["disk_pct"], th["disk_amber"], th["disk_red"])
-
     lines = ["<b>\U0001f5a5 System Detail</b>\n"]
-    lines.append(f"Uptime: {esc(stats['uptime'])}")
-    lines.append(f"{load_rag} Load: {esc(stats['load'])} ({stats['nproc']} cores)")
-    lines.append(f"{mem_rag} Memory: {esc(stats['mem'])} ({stats['mem_pct']:.0f}%)")
-
-    if stats["cpu_temp"] is not None:
-        temp_rag = _rag(stats["cpu_temp"], th["cpu_temp_amber"], th["cpu_temp_red"])
-        lines.append(f"{temp_rag} CPU temp: {stats['cpu_temp']:.0f}°C")
-
-    lines.append(f"{disk_rag} Disk: {esc(stats['disk'])}")
+    lines.extend(format_system_rag_lines(stats, th))
 
     # Detailed disk breakdown
     raw = subprocess.getoutput("df -h --exclude-type=tmpfs --exclude-type=devtmpfs")
@@ -926,23 +962,7 @@ def cmd_security(chat_id: str) -> None:
             lines.append(f"  {esc(str(desc))}")
 
     # Critical alerts (Level 10+)
-    result = indexer_search(
-        {
-            "size": 0,
-            "query": {
-                "bool": {
-                    "must": [{"range": {"timestamp": {"gte": "now-24h"}}}, {"range": {"rule.level": {"gte": 10}}}]
-                }
-            },
-            "aggs": {
-                "by_level": {
-                    "terms": {"field": "rule.level", "size": 10, "order": {"_key": "desc"}},
-                    "aggs": {"by_rule": {"terms": {"field": "rule.description", "size": 3}}},
-                }
-            },
-        }
-    )
-    buckets = result.get("aggregations", {}).get("by_level", {}).get("buckets", [])
+    buckets = query_critical_alerts(top_rules_per_level=3)
 
     if buckets:
         lines.append("\n<b>Critical Alerts (24h)</b>")
@@ -1392,9 +1412,10 @@ def main() -> None:
                 if "message" in update:
                     try:
                         process_update(update)
-                    except Exception as e:
+                    except Exception:
                         log(f"process_update error: {traceback.format_exc()}")
-                        send_message(str(update.get("message", {}).get("chat", {}).get("id", "")), f"⛔ Error: {e!s}")
+                        chat_id = str(update.get("message", {}).get("chat", {}).get("id", ""))
+                        send_message(chat_id, "⛔ Internal error — check server logs")
         except Exception:
             log(f"main loop error: {traceback.format_exc()}")
             time.sleep(5)

@@ -209,10 +209,6 @@ def get_cfg() -> dict:
     return cfg
 
 
-# Legacy constant — kept for backward compatibility during transition
-_alerts: dict = _DEFAULTS["alerts"]  # type: ignore[assignment]
-SILENT_RULES = set(_alerts["silent_rules"])
-
 
 def load_env_file(path: str = ENV_FILE) -> None:
     """Parse a shell-style KEY=VALUE env file into os.environ.

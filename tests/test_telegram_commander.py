@@ -295,8 +295,6 @@ class TestCmdSecurity:
             "1.5G/4.0G",  # free -h memory
             "42% used (20G/50G)",  # df -h disk
             "3",  # iptables banned
-            # parse_ban_history:
-            "",  # ban history grep
         ]
         # Mock wazuh token + indexer searches
         mock_resp = MagicMock()
@@ -326,19 +324,24 @@ class TestCmdBitcoin:
 
 class TestCmdBlocked:
     def test_displays_ban_info(self, commander):
-        commander._mock_getoutput.side_effect = [
-            "DROP  all  -- 1.2.3.4  0.0.0.0/0",  # iptables page
-            "5",  # total count
-            "2026/03/09 Banned 1.2.3.4 (Rule 5710)",  # ban log page
-        ]
+        from unittest.mock import MagicMock
+        # subprocess.run returns iptables output
+        ipt_result = MagicMock()
+        ipt_result.stdout = "Chain INPUT (policy ACCEPT)\nDROP  all  -- 1.2.3.4  0.0.0.0/0\n"
+        commander._mock_run.return_value = ipt_result
+        # Write ban log data
+        with open(commander._ban_log, "w") as f:
+            f.write("2026/03/09 12:00:00 Banned 1.2.3.4 (Rule 5710)\n")
         commander.cmd_blocked("123")
         assert commander._mock_post.call_count == 2
 
     def test_ip_lookup(self, commander):
-        commander._mock_getoutput.side_effect = [
-            "DROP  all  -- 1.2.3.4  0.0.0.0/0",  # iptables grep
-            "2026/03/09 Banned 1.2.3.4 (Rule 5710)",  # history grep
-        ]
+        from unittest.mock import MagicMock
+        ipt_result = MagicMock()
+        ipt_result.stdout = "Chain INPUT (policy ACCEPT)\nDROP  all  -- 1.2.3.4  0.0.0.0/0\n"
+        commander._mock_run.return_value = ipt_result
+        with open(commander._ban_log, "w") as f:
+            f.write("2026/03/09 12:00:00 Banned 1.2.3.4 (Rule 5710)\n")
         commander.cmd_blocked("123", "1.2.3.4")
         text = commander._mock_post.call_args[1]["json"]["text"]
         assert "Lookup" in text

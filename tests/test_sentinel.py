@@ -31,13 +31,6 @@ class TestConfig:
 
         assert env("TEST_KEY", "fallback") == "real"
 
-    def test_silent_rules_is_set(self):
-        from sentinel.config import SILENT_RULES
-
-        assert isinstance(SILENT_RULES, set)
-        assert "31151" in SILENT_RULES
-        assert "5710" in SILENT_RULES
-
     def test_load_env_file(self, tmp_path, monkeypatch):
         env_file = tmp_path / "test.env"
         env_file.write_text("# comment\nNEW_VAR=hello\nEXISTING=old\n\nSPACED = world\n")

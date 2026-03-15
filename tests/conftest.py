@@ -126,17 +126,31 @@ def commander(monkeypatch, tmp_path):
     Returns the loaded module.  HTTP calls and subprocess are
     pre-mocked.
     """
+    ban_log = tmp_path / "ban-history.log"
+    ban_log.touch()
+
     with (
         patch("requests.post") as mock_post,
         patch("requests.get") as mock_get,
         patch("subprocess.getoutput", return_value="") as mock_getoutput,
         patch("subprocess.run") as mock_run,
     ):
+        from sentinel.config import _DEFAULTS, _deep_merge, reload_config
+
+        reload_config()
         mod = _import_script("telegram-commander.py", monkeypatch)
+        # Point ban_log at temp file so parse_ban_history / cmd_blocked
+        # don't try to open /var/ossec paths.
+        test_cfg = _deep_merge(
+            _DEFAULTS,
+            {"active_response": {"ban_log": str(ban_log)}},
+        )
+        monkeypatch.setattr("sentinel.config.cfg", test_cfg)
         mod._mock_post = mock_post
         mod._mock_get = mock_get
         mod._mock_getoutput = mock_getoutput
         mod._mock_run = mock_run
+        mod._ban_log = str(ban_log)
         yield mod
 
 

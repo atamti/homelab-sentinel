@@ -27,6 +27,7 @@ sys.path.insert(0, os.environ.get("SENTINEL_LIB", os.path.dirname(os.path.abspat
 
 from sentinel import telegram
 from sentinel.config import env, get_cfg, load_env_file
+from sentinel.telegram import esc
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 # Wazuh spawns integrations directly (not via systemd), so load env explicitly.
@@ -76,18 +77,18 @@ def format_alert(alert: dict) -> tuple[str, int, str]:
     alert_id = alert.get("id", "N/A")
 
     msg = f"<b>Wazuh Alert (Level {level})</b>\n"
-    msg += f"<b>Rule:</b> {rule_id} - {description}\n"
-    msg += f"<b>Time:</b> {timestamp[:19]}\n"
+    msg += f"<b>Rule:</b> {esc(str(rule_id))} - {esc(description)}\n"
+    msg += f"<b>Time:</b> {esc(timestamp[:19])}\n"
     if src_ip:
-        msg += f"<b>Source IP:</b> <code>{src_ip}</code>\n"
+        msg += f"<b>Source IP:</b> <code>{esc(src_ip)}</code>\n"
 
     # Enrich port change alerts with agent, port, and direction
     if rule_id == "100200":
         full_log = alert.get("full_log", "")
         port, direction = _parse_port_change(full_log)
-        msg += f"<b>Agent:</b> {agent_id} | <b>Port:</b> {port} | <b>Status:</b> {direction}\n"
+        msg += f"<b>Agent:</b> {esc(str(agent_id))} | <b>Port:</b> {esc(port)} | <b>Status:</b> {esc(direction)}\n"
 
-    msg += f"<b>Ref:</b> <code>{alert_id}</code>\n"  # <code> tag = tappable on mobile
+    msg += f"<b>Ref:</b> <code>{esc(str(alert_id))}</code>\n"  # <code> tag = tappable on mobile
 
     return msg, level, rule_id
 
