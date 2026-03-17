@@ -318,3 +318,20 @@ done
 
 echo ""
 info "Deploy complete!"
+
+# ── Register bot commands with Telegram ──────────────────────────────────────
+
+PYTHON_BIN="/var/ossec/framework/python/bin/python3"
+COMMANDER="${FILES["telegram-commander.py"]}"
+
+if [[ "$DRY_RUN" == true ]]; then
+    echo "  (dry-run) register bot commands"
+else
+    info "Registering bot commands with Telegram..."
+    register_cmd="set -a && source ${ENV_DEST} && set +a && ${PYTHON_BIN} ${COMMANDER} --register-commands"
+    if [[ -n "$TARGET" ]]; then
+        ssh "$TARGET" "sudo bash -c '$register_cmd'" && info "Bot commands registered ✓" || warn "Command registration failed — run manually after fixing env vars"
+    else
+        sudo bash -c "$register_cmd" && info "Bot commands registered ✓" || warn "Command registration failed — run manually after fixing env vars"
+    fi
+fi
