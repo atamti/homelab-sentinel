@@ -1036,7 +1036,6 @@ def cmd_bitcoin(chat_id: str) -> None:
             lines.append(f"\U0001f7e1 Block height: {local_height} (lagging {lag} blocks)")
         else:
             lines.append(f"\U0001f7e2 Block height: {local_height}")
-        lines.append(f"Public height: {public_height}")
     elif public_ok:
         lines.append(f"\U0001f7e1 Block height: {public_height} (local node unreachable)")
     elif local_ok:
@@ -1067,17 +1066,8 @@ def cmd_bitcoin(chat_id: str) -> None:
             lines.append("<b>Lightning (LND)</b>")
             synced = "\U0001f7e2 yes" if lnd_info.get("synced_to_chain") else "\U0001f7e1 no"
             lines.append(f"Synced: {synced}")
-            alias = lnd_info.get("alias", "")
-            if alias:
-                lines.append(f"Alias: {esc(alias)}")
-            version = lnd_info.get("version", "")
-            if version:
-                lines.append(f"Version: {esc(version)}")
             peers = lnd_info.get("num_peers", 0)
             lines.append(f"Peers: {peers}")
-            block_height = lnd_info.get("block_height", "")
-            if block_height:
-                lines.append(f"LND block height: {block_height}")
         else:
             lines.append("\n\U0001f534 LND unreachable")
 
@@ -1085,16 +1075,23 @@ def cmd_bitcoin(chat_id: str) -> None:
         channels = lnd_get("/v1/channels")
         ch_list = channels.get("channels", []) if channels else []
         if ch_list:
+            btc_cfg = _bitcoin_config().get("channel_health", {})
+            min_ratio = btc_cfg.get("min_local_ratio", 0.15)
+            max_ratio = btc_cfg.get("max_local_ratio", 0.85)
             emoji, label = score_channel_health(ch_list)
             lines.append(f"\nChannels: {emoji} {label}")
             for ch in ch_list:
                 cap = int(ch.get("capacity", 0))
                 local = int(ch.get("local_balance", 0))
-                active = "\U0001f7e2" if ch.get("active") else "\U0001f534"
-                alias = ch.get("peer_alias", ch.get("remote_pubkey", "?")[:12])
-                ratio = (local / cap * 100) if cap > 0 else 0
-                lines.append(f"  {active} {esc(str(alias))}")
-                lines.append(f"    {local:,} / {cap:,} sat ({ratio:.0f}% local)")
+                ratio = (local / cap) if cap > 0 else 0
+                pct = ratio * 100
+                if not ch.get("active"):
+                    dot = "\U0001f534"
+                elif ratio < min_ratio or ratio > max_ratio:
+                    dot = "\U0001f7e1"
+                else:
+                    dot = "\U0001f7e2"
+                lines.append(f"  {dot} {pct:.0f}% local")
 
         # Wallet balance
         balance = lnd_get("/v1/balance/channels")
@@ -1103,10 +1100,10 @@ def cmd_bitcoin(chat_id: str) -> None:
             local_bal = int(lb.get("sat", 0)) if isinstance(lb, dict) else int(lb)
             rb = balance.get("remote_balance", 0)
             remote_bal = int(rb.get("sat", 0)) if isinstance(rb, dict) else int(rb)
-            if local_bal or remote_bal:
-                lines.append("\n<b>Channel Balance</b>")
-                lines.append(f"  Local:  {local_bal:,} sat")
-                lines.append(f"  Remote: {remote_bal:,} sat")
+            total_bal = local_bal + remote_bal
+            if total_bal > 0:
+                local_pct = local_bal / total_bal * 100
+                lines.append(f"\nBalance: {local_pct:.0f}% local / {100 - local_pct:.0f}% remote")
 
     send_message(chat_id, "\n".join(lines))
 
