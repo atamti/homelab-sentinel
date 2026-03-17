@@ -496,6 +496,7 @@ def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
         stats = get_system_stats()
         th = cfg["digest"]["thresholds"]
         lines.extend(format_system_rag_lines(stats, th, compact=True))
+        lines.append("→ /system")
         lines.append("")
 
     # ── Agents ───────────────────────────────────────────────────────
@@ -534,6 +535,7 @@ def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
             display = agent_alias(name)
             os_name = a.get("os", {}).get("name", "?")
             lines.append(f"  \U0001f7e2 {esc(display)} ({esc(os_name)})")
+        lines.append("→ /agents")
         lines.append("")
 
     # ── Security ─────────────────────────────────────────────────────
@@ -575,6 +577,7 @@ def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
         else:
             lines.append("  No Level 10+ alerts \u2705")
 
+        lines.append("→ /security  /blocked")
         lines.append("")
 
     # ── Services ─────────────────────────────────────────────────────
@@ -586,6 +589,7 @@ def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
             lines.append(f"\U0001f534 Down: {names}")
         else:
             lines.append(f"\U0001f7e2 All {len(up_list)} services up")
+        lines.append("→ /services")
         lines.append("")
 
     # ── Bitcoin ──────────────────────────────────────────────────────
@@ -634,6 +638,8 @@ def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
                 if ch_list:
                     emoji, label = score_channel_health(ch_list)
                     lines.append(f"Channels: {emoji} {label}")
+
+        lines.append("→ /bitcoin")
 
     send_message(chat_id, "\n".join(lines))
     log("digest: sent")
