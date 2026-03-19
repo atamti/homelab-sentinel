@@ -17,7 +17,7 @@ class TestFormatAlert:
         assert "Level 10" in msg
         assert "5710" in msg
         assert "SSH brute force" in msg
-        assert "server1" not in msg  # agent name stripped
+        assert "Agent:</b> server1" in msg
         assert "1.2.3.4" in msg
         assert "abc-123" in msg
         assert "Ref:" in msg
@@ -51,10 +51,9 @@ class TestFormatAlert:
             "full_log": "New listening port 9090/tcp detected",
         }
         msg, _level, _rule_id = custom_telegram.format_alert(alert)
-        assert "Agent:</b> 002" in msg
+        assert "Agent:</b> minibolt" in msg
         assert "Port:</b> 9090" in msg
         assert "Status:</b> opened" in msg
-        assert "minibolt" not in msg
 
     def test_unexpected_port_closed(self, custom_telegram):
         alert = {
@@ -66,7 +65,7 @@ class TestFormatAlert:
             "full_log": "Previously active port 8080/tcp became inactive",
         }
         msg, _level, _rule_id = custom_telegram.format_alert(alert)
-        assert "Agent:</b> 001" in msg
+        assert "Agent:</b> masterserver" in msg
         assert "Port:</b> 8080" in msg
         assert "Status:</b> closed" in msg
 
@@ -80,7 +79,7 @@ class TestFormatAlert:
             "full_log": "",
         }
         msg, _level, _rule_id = custom_telegram.format_alert(alert)
-        assert "Agent:</b> 003" in msg
+        assert "Agent:</b> unknown" in msg
         assert "Port:</b> unknown" in msg
         assert "Status:</b> changed" in msg
 

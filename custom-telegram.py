@@ -27,6 +27,7 @@ sys.path.insert(0, os.environ.get("SENTINEL_LIB", os.path.dirname(os.path.abspat
 
 from sentinel import telegram
 from sentinel.config import env, get_cfg, load_env_file
+from sentinel.sanitize import agent_alias
 from sentinel.telegram import esc
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -71,7 +72,8 @@ def format_alert(alert: dict) -> tuple[str, int, str]:
     level = rule.get("level", 0)
     description = rule.get("description", "N/A")
     rule_id = str(rule.get("id", "N/A"))
-    agent_id = agent.get("id", "?")
+    agent_name = agent.get("name", "unknown")
+    agent_display = agent_alias(agent_name)
     timestamp = alert.get("timestamp", "N/A")
     src_ip = alert.get("data", {}).get("srcip", "")
     alert_id = alert.get("id", "N/A")
@@ -81,12 +83,13 @@ def format_alert(alert: dict) -> tuple[str, int, str]:
     msg += f"<b>Time:</b> {esc(timestamp[:19])}\n"
     if src_ip:
         msg += f"<b>Source IP:</b> <code>{esc(src_ip)}</code>\n"
+    msg += f"<b>Agent:</b> {esc(agent_display)}\n"
 
-    # Enrich port change alerts with agent, port, and direction
+    # Enrich port change alerts with port and direction details
     if rule_id == "100200":
         full_log = alert.get("full_log", "")
         port, direction = _parse_port_change(full_log)
-        msg += f"<b>Agent:</b> {esc(str(agent_id))} | <b>Port:</b> {esc(port)} | <b>Status:</b> {esc(direction)}\n"
+        msg += f"<b>Port:</b> {esc(port)} | <b>Status:</b> {esc(direction)}\n"
 
     msg += f"<b>Ref:</b> <code>{esc(str(alert_id))}</code>\n"  # <code> tag = tappable on mobile
 
