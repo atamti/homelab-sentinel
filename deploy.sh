@@ -214,17 +214,22 @@ if [[ "$yaml_exists" != "yes" ]]; then
     warn "${YAML_DEST} not found — seeding from ${YAML_EXAMPLE}"
     warn "Edit this file to enable output sanitization"
     copy_file "${SCRIPT_DIR}/${YAML_EXAMPLE}" "${YAML_DEST}"
-    run_cmd "sudo chmod 600 ${YAML_DEST}"
+    run_cmd "sudo chown root:wazuh ${YAML_DEST}"
+    run_cmd "sudo chmod 640 ${YAML_DEST}"
 elif [[ "$OVERWRITE_YAML" == true ]]; then
     if confirm "${YAML_DEST} exists and will be OVERWRITTEN with ${YAML_EXAMPLE}"; then
         copy_file "${SCRIPT_DIR}/${YAML_EXAMPLE}" "${YAML_DEST}"
-        run_cmd "sudo chmod 600 ${YAML_DEST}"
+        run_cmd "sudo chown root:wazuh ${YAML_DEST}"
+        run_cmd "sudo chmod 640 ${YAML_DEST}"
         warn "${YAML_DEST} overwritten — review and adjust settings!"
     else
         info "Skipped overwriting ${YAML_DEST}"
     fi
 else
     info "${YAML_DEST} already exists — not overwriting"
+    # Ensure correct ownership for Wazuh integration scripts
+    run_cmd "sudo chown root:wazuh ${YAML_DEST}"
+    run_cmd "sudo chmod 640 ${YAML_DEST}"
 fi
 
 # ── Drop latest example files + check for new keys ──────────────────────────
