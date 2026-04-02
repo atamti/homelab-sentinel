@@ -462,15 +462,19 @@ def cmd_uptime(chat_id: str) -> None:
 def cmd_services(chat_id: str) -> None:
     lines = ["<b>\U0001f4e1 Services</b>\n"]
 
+    cfg = get_cfg()
+
     # Docker containers
-    result = subprocess.getoutput(
-        "DOCKER_HOST=unix:///run/user/1001/docker.sock docker ps -a --format 'table {{.Names}}\t{{.Status}}' 2>&1"
+    docker_socket = cfg["integrations"]["docker_socket"]
+    result = subprocess.run(
+        ["docker", "ps", "-a", "--format", "table {{.Names}}\t{{.Status}}"],
+        capture_output=True, text=True,
+        env={**os.environ, "DOCKER_HOST": docker_socket},
     )
-    summary = summarize_docker_output(result)
+    summary = summarize_docker_output(result.stdout if result.returncode == 0 else result.stderr)
     lines.append(f"<b>Docker Containers</b>\n{summary}\n")
 
     # Uptime Kuma monitors
-    cfg = get_cfg()
     if cfg["integrations"]["uptime_kuma"]["enabled"]:
         up_list, down_list = get_uptime_kuma_status()
         if down_list:

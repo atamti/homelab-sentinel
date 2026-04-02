@@ -101,6 +101,7 @@ digest:
 
 # ── External integrations ────────────────────────────────────────────────────
 integrations:
+  docker_socket: "unix:///run/user/1001/docker.sock"
   bitcoin:
     enabled: false  # set true to enable the Bitcoin & Lightning addon
     mempool_local: "https://minibolt.local:4081"

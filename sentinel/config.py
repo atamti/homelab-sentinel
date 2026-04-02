@@ -106,6 +106,7 @@ _DEFAULTS: dict[str, Any] = {
         },
     },
     "integrations": {
+        "docker_socket": "unix:///run/user/1001/docker.sock",
         "bitcoin": {
             "enabled": False,
             "mempool_local": "https://minibolt.local:4081",
