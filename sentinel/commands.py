@@ -927,6 +927,63 @@ COMMANDS: dict[str, Callable[[str, str], None]] = {
     "/shutdown": cmd_shutdown,
 }
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Interactive Prompts — step-by-step arg collection for action commands
+# ══════════════════════════════════════════════════════════════════════════════
+
+COMMAND_PROMPTS: dict[str, list[str]] = {
+    "/block": ["Enter IP address to block:", "Enter TOTP code:"],
+    "/unblock": ["Enter IP address to unblock:", "Enter TOTP code:"],
+    "/closeport": ["Enter port to close:", "Enter TOTP code:"],
+    "/openport": ["Enter port to open:", "Enter TOTP code:"],
+    "/restart": ["Enter 'manager' or agent ID:", "Enter TOTP code:"],
+    "/syscheck": ["Enter agent ID:", "Enter TOTP code:"],
+    "/lockdown": ["Enter TOTP code:"],
+    "/restore": ["Enter TOTP code:"],
+    "/shutdown": ["Enter TOTP code:"],
+}
+
+_pending: dict[str, dict[str, Any]] = {}
+
+
+def start_prompt(chat_id: str, command: str) -> None:
+    """Begin an interactive prompt sequence for a command."""
+    prompts = COMMAND_PROMPTS[command]
+    _pending[chat_id] = {
+        "command": command,
+        "step": 0,
+        "args": [],
+        "prompts": prompts,
+    }
+    send_message(chat_id, prompts[0])
+
+
+def handle_pending(chat_id: str, text: str) -> bool:
+    """Process the next answer in a pending prompt sequence.
+
+    Returns True if a pending prompt was active (and handled), False otherwise.
+    """
+    if chat_id not in _pending:
+        return False
+    state = _pending[chat_id]
+    state["args"].append(text.strip())
+    state["step"] += 1
+    if state["step"] < len(state["prompts"]):
+        send_message(chat_id, state["prompts"][state["step"]])
+        return True
+    # All args collected — execute the command
+    command: str = state["command"]
+    arg = " ".join(state["args"])
+    del _pending[chat_id]
+    handler = COMMANDS[command]
+    handler(chat_id, arg)
+    return True
+
+
+def cancel_pending(chat_id: str) -> None:
+    """Cancel any pending prompt sequence for a chat."""
+    _pending.pop(chat_id, None)
+
 
 def register_commands() -> bool:
     """Register bot commands with Telegram for autocomplete menu.

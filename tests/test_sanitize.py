@@ -68,6 +68,20 @@ class TestScrubHostnames:
         assert result == "masterserver"
         assert count == 0
 
+    def test_no_substring_replacement(self, tmp_path):
+        cfg = {"sanitization": {"hostnames": {"fulcrum": "the_fulcrum"}}}
+        with _patch_config(tmp_path, cfg):
+            result, count = sanitize.scrub_hostnames("host the_fulcrum is up")
+        assert result == "host the_fulcrum is up"
+        assert count == 0
+
+    def test_whole_word_replacement(self, tmp_path):
+        cfg = {"sanitization": {"hostnames": {"fulcrum": "the_fulcrum"}}}
+        with _patch_config(tmp_path, cfg):
+            result, count = sanitize.scrub_hostnames("host fulcrum is up")
+        assert result == "host the_fulcrum is up"
+        assert count == 1
+
 
 # ── agent_alias ──────────────────────────────────────────────────────────────
 

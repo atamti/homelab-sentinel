@@ -178,7 +178,9 @@ commands.init(
 
 from sentinel.commands import (  # noqa: E402
     BOT_MENU,
+    COMMAND_PROMPTS,
     COMMANDS,
+    cancel_pending,
     cmd_agents,
     cmd_alerts,
     cmd_bitcoin,
@@ -202,7 +204,9 @@ from sentinel.commands import (  # noqa: E402
     cmd_unblock,
     cmd_uptime,
     get_uptime_kuma_status,
+    handle_pending,
     register_commands,
+    start_prompt,
 )
 
 
@@ -226,6 +230,16 @@ def process_update(update: dict) -> None:
     command = parts[0].lower() if parts else ""
     arg = parts[1].strip() if len(parts) > 1 else ""
 
+    # Non-command text — check for a pending interactive prompt
+    if not command.startswith("/"):
+        if handle_pending(chat_id, text):
+            return
+        send_message(chat_id, f"Unknown command: {command}\nType /help for available commands")
+        return
+
+    # New command — cancel any in-progress prompt
+    cancel_pending(chat_id)
+
     log(f"cmd: {command}")
     handler = COMMANDS.get(command)
     if handler:
@@ -238,6 +252,10 @@ def process_update(update: dict) -> None:
             enabled = set(enabled_sections)
         if cmd_name not in enabled:
             send_message(chat_id, f"Command disabled: {command}")
+            return
+        # No args and command supports interactive prompts — start prompting
+        if not arg and command in COMMAND_PROMPTS:
+            start_prompt(chat_id, command)
             return
         handler(chat_id, arg)
     else:

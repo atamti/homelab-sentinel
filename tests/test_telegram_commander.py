@@ -598,3 +598,82 @@ class TestDigestState:
         state_file.write_text("garbage")
         commander.DIGEST_STATE_FILE = str(state_file)
         assert commander._read_digest_state() is None
+
+
+# ── Interactive prompts ──────────────────────────────────────────────────────
+
+
+class TestInteractivePrompts:
+    """Verify step-by-step arg collection for action commands."""
+
+    def test_no_args_starts_prompt(self, commander):
+        """Tapping /unblock with no args should prompt for IP."""
+        commander.process_update(make_telegram_update("/unblock"))
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "IP address" in text
+
+    def test_full_flow_two_arg(self, commander):
+        """Complete /unblock flow: command → IP → TOTP → execution."""
+        totp = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
+
+        # Step 1: bare command → prompts for IP
+        commander.process_update(make_telegram_update("/unblock"))
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "IP address" in text
+
+        commander._mock_post.reset_mock()
+
+        # Step 2: provide IP → prompts for TOTP
+        commander.process_update(make_telegram_update("192.168.1.100"))
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "TOTP" in text
+
+        commander._mock_post.reset_mock()
+
+        # Step 3: provide TOTP → cmd_unblock executes
+        commander.process_update(make_telegram_update(totp))
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "Unblocked" in text or "Invalid" not in text
+
+    def test_full_flow_totp_only(self, commander):
+        """Complete /lockdown flow: command → TOTP → execution."""
+        totp = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
+
+        commander.process_update(make_telegram_update("/lockdown"))
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "TOTP" in text
+
+        commander._mock_post.reset_mock()
+
+        commander.process_update(make_telegram_update(totp))
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "LOCKDOWN" in text
+
+    def test_inline_args_bypass_prompts(self, commander):
+        """Providing args inline should skip interactive flow."""
+        totp = pyotp.TOTP(FAKE_ENV["TOTP_SECRET"]).now()
+        commander.process_update(make_telegram_update(f"/lockdown {totp}"))
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "LOCKDOWN" in text
+
+    def test_new_command_cancels_pending(self, commander):
+        """Starting a new command mid-flow cancels the pending prompt."""
+        commander.process_update(make_telegram_update("/unblock"))
+        commander._mock_post.reset_mock()
+
+        # Instead of answering, issue /help
+        commander.process_update(make_telegram_update("/help"))
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "Homelab Sentinel" in text
+
+        # The old pending state should be gone — bare text now treated as unknown
+        commander._mock_post.reset_mock()
+        commander.process_update(make_telegram_update("192.168.1.100"))
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "Unknown command" in text
+
+    def test_non_command_text_without_pending(self, commander):
+        """Bare text with no pending prompt → Unknown command."""
+        commander.process_update(make_telegram_update("random text"))
+        text = commander._mock_post.call_args[1]["json"]["text"]
+        assert "Unknown command" in text

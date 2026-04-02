@@ -144,7 +144,7 @@ def scrub_hostnames(text: str) -> tuple[str, int]:
         if not hostname:
             continue
         replacement = str(display) if display else "[host]"
-        pattern = re.compile(re.escape(hostname), re.IGNORECASE)
+        pattern = re.compile(r"\b" + re.escape(hostname) + r"\b", re.IGNORECASE)
         text, n = _replace_outside_tags(text, pattern, replacement)
         count += n
     return text, count
