@@ -1,4 +1,4 @@
-requests>=2.28
-pyotp>=2.8
-urllib3>=2.0
-pyyaml>=6.0
+requests==2.33.1
+pyotp==2.9.0
+urllib3==2.6.3
+pyyaml==6.0.3

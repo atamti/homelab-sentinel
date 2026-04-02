@@ -16,7 +16,7 @@ _CONFIG_PATHS = [
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "homelab-sentinel.yaml"),
 ]
 
-_DEFAULTS = {
+_DEFAULTS: dict[str, Any] = {
     "alerts": {
         "full_log_level": 7,
         "critical_level": 10,
@@ -90,7 +90,7 @@ _DEFAULTS = {
             "agents": True,
             "security": True,
             "services": True,
-            "bitcoin": True,
+            "bitcoin": False,
         },
         "critical_agents": {},
         "bitcoin_lag_warning_blocks": 6,
@@ -107,12 +107,12 @@ _DEFAULTS = {
     },
     "integrations": {
         "bitcoin": {
-            "enabled": True,
+            "enabled": False,
             "mempool_local": "https://minibolt.local:4081",
             "mempool_public_fallback": True,
         },
         "lnd": {
-            "enabled": True,
+            "enabled": False,
             "rest_url": "https://minibolt.local:8080",
         },
         "uptime_kuma": {

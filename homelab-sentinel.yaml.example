@@ -91,7 +91,7 @@ digest:
     agents: true
     security: true
     services: true
-    bitcoin: true
+    bitcoin: false  # enable via integrations.bitcoin.enabled
   # Agents that must always be online — "red" or "amber" severity
   # critical_agents:
   #   masterserver: red
@@ -102,11 +102,11 @@ digest:
 # ── External integrations ────────────────────────────────────────────────────
 integrations:
   bitcoin:
-    enabled: true
+    enabled: false  # set true to enable the Bitcoin & Lightning addon
     mempool_local: "https://minibolt.local:4081"
     mempool_public_fallback: true
   lnd:
-    enabled: true
+    enabled: false  # set true to enable LND integration
     rest_url: "https://minibolt.local:8080"
   uptime_kuma:
     enabled: true

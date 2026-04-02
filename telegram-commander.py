@@ -33,7 +33,6 @@ import pyotp
 import requests
 
 from sentinel import telegram, wazuh
-from sentinel.bitcoin import score_channel_health, valid_height
 from sentinel.config import VERSION, env, get_cfg, require_env
 from sentinel.sanitize import sanitize
 from sentinel.security import clean_rule_desc, format_table_row, simplify_service_name
@@ -164,6 +163,10 @@ def require_totp_only(chat_id: str, arg: str) -> bool:
 
 from sentinel import commands  # noqa: E402
 
+# Load optional addons before init() so they can register commands/menus
+if get_cfg()["integrations"]["bitcoin"]["enabled"]:
+    import sentinel.addons.bitcoin  # noqa: E402, F401
+
 commands.init(
     send_message=send_message,
     log=log,
@@ -183,7 +186,6 @@ from sentinel.commands import (  # noqa: E402
     cancel_pending,
     cmd_agents,
     cmd_alerts,
-    cmd_bitcoin,
     cmd_block,
     cmd_blocked,
     cmd_closeport,

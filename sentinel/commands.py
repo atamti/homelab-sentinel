@@ -17,7 +17,14 @@ from typing import Any
 
 import requests
 
-from sentinel.bitcoin import lnd_get, mempool_get, score_channel_health, valid_height
+from sentinel.addons import (
+    addon_commands,
+    addon_digest_sections,
+    addon_help,
+    addon_init_hooks,
+    addon_menu,
+    addon_prompts,
+)
 from sentinel.config import VERSION, get_cfg
 from sentinel.sanitize import abbreviate_os, agent_alias, summarize_docker_output
 from sentinel.security import (
@@ -50,6 +57,8 @@ WAZUH_API: Any = None
 def init(**deps: Any) -> None:
     """Wire up runtime dependencies from telegram-commander.py."""
     globals().update(deps)
+    for hook in addon_init_hooks:
+        hook(**deps)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -201,54 +210,9 @@ def cmd_digest(chat_id: str, title: str = "\u2600\ufe0f Daily Digest") -> None:
         lines.append("→ /services")
         lines.append("")
 
-    # ── Bitcoin ──────────────────────────────────────────────────────
-    if cfg["digest"]["sections"]["bitcoin"] and cfg["integrations"]["bitcoin"]["enabled"]:
-        lines.append("<b>\u20bf Bitcoin</b>")
-
-        local_height = mempool_get("/api/blocks/tip/height")
-        public_height = mempool_get("/api/blocks/tip/height", public=True)
-
-        lag_threshold = cfg["digest"]["bitcoin_lag_warning_blocks"]
-        local_ok = valid_height(local_height)
-        public_ok = valid_height(public_height)
-
-        if local_ok and public_ok:
-            lag = int(str(public_height)) - int(str(local_height))
-            if lag > lag_threshold:
-                lines.append(f"\U0001f7e1 Block height: {local_height} (lagging {lag} blocks)")
-            else:
-                lines.append(f"\U0001f7e2 Block height: {local_height}")
-        elif public_ok:
-            lines.append(f"\U0001f7e1 Block height: {public_height} (local node unreachable)")
-        elif local_ok:
-            lines.append(f"\U0001f7e1 Block height: {local_height} (public API unreachable)")
-        else:
-            lines.append("\U0001f534 Block height: unavailable")
-
-        fees = mempool_get("/api/v1/fees/recommended")
-        if isinstance(fees, dict):
-            lines.append(
-                f"Fees: {fees.get('fastestFee')} / "
-                f"{fees.get('halfHourFee')} / "
-                f"{fees.get('hourFee')} sat/vB (fast/30m/1h)"
-            )
-
-        if cfg["integrations"]["lnd"]["enabled"]:
-            lnd_info = lnd_get("/v1/getinfo")
-            if lnd_info:
-                synced = "\U0001f7e2" if lnd_info.get("synced_to_chain") else "\U0001f7e1 not synced"
-                lines.append(f"LND: {synced}")
-            else:
-                lines.append("LND: \U0001f534 unreachable")
-
-            channels = lnd_get("/v1/channels")
-            if channels:
-                ch_list = channels.get("channels", [])
-                if ch_list:
-                    emoji, label = score_channel_health(ch_list)
-                    lines.append(f"Channels: {emoji} {label}")
-
-        lines.append("→ /bitcoin")
+    # ── Addon digest sections ────────────────────────────────────────
+    for _order, section_func in addon_digest_sections:
+        section_func(cfg, lines)
 
     send_message(chat_id, "\n".join(lines))
     log("digest: sent")
@@ -271,8 +235,8 @@ def cmd_help(chat_id: str) -> None:
     text += "/agents — Agent list & status\n\n"
     text += "<b>\U0001f4e1 Services</b>\n"
     text += "/services — Docker & service status\n\n"
-    text += "<b>\u20bf Bitcoin</b>\n"
-    text += "/bitcoin — Bitcoin & Lightning detail\n\n"
+    for block in addon_help:
+        text += block + "\n"
     text += "<b>\U0001f512 Active Response</b> <i>(TOTP)</i>\n"
     text += "/block [ip] [totp]\n"
     text += "/unblock [ip] [totp]\n"
@@ -624,99 +588,6 @@ def cmd_security(chat_id: str) -> None:
     send_message(chat_id, "\n".join(lines))
 
 
-def cmd_bitcoin(chat_id: str) -> None:
-    cfg = get_cfg()
-    if not cfg["integrations"]["bitcoin"]["enabled"]:
-        send_message(chat_id, "Bitcoin integration is disabled")
-        return
-
-    lines = ["<b>\u20bf Bitcoin Detail</b>\n"]
-
-    # Block height
-    local_height = mempool_get("/api/blocks/tip/height")
-    public_height = mempool_get("/api/blocks/tip/height", public=True)
-    lag_threshold = cfg["digest"]["bitcoin_lag_warning_blocks"]
-    local_ok = valid_height(local_height)
-    public_ok = valid_height(public_height)
-
-    if local_ok and public_ok:
-        lag = int(str(public_height)) - int(str(local_height))
-        if lag > lag_threshold:
-            lines.append(f"\U0001f7e1 Block height: {local_height} (lagging {lag} blocks)")
-        else:
-            lines.append(f"\U0001f7e2 Block height: {local_height}")
-    elif public_ok:
-        lines.append(f"\U0001f7e1 Block height: {public_height} (local node unreachable)")
-    elif local_ok:
-        lines.append(f"\U0001f7e1 Block height: {local_height} (public API unreachable)")
-    else:
-        lines.append("\U0001f534 Block height: unavailable")
-
-    # Fees
-    fees = mempool_get("/api/v1/fees/recommended")
-    if isinstance(fees, dict):
-        lines.append("")
-        lines.append("<b>Mempool Fees</b> (sat/vB)")
-        lines.append(f"  Fastest:  {fees.get('fastestFee')}")
-        lines.append(f"  30 min:   {fees.get('halfHourFee')}")
-        lines.append(f"  1 hour:   {fees.get('hourFee')}")
-        eco = fees.get("economyFee")
-        if eco:
-            lines.append(f"  Economy:  {eco}")
-        minimum = fees.get("minimumFee")
-        if minimum:
-            lines.append(f"  Minimum:  {minimum}")
-
-    # LND
-    if cfg["integrations"]["lnd"]["enabled"]:
-        lnd_info = lnd_get("/v1/getinfo")
-        if lnd_info:
-            lines.append("")
-            lines.append("<b>Lightning (LND)</b>")
-            synced = "\U0001f7e2 yes" if lnd_info.get("synced_to_chain") else "\U0001f7e1 no"
-            lines.append(f"Synced: {synced}")
-            peers = lnd_info.get("num_peers", 0)
-            lines.append(f"Peers: {peers}")
-        else:
-            lines.append("\n\U0001f534 LND unreachable")
-
-        # Channel detail
-        channels = lnd_get("/v1/channels")
-        ch_list: list[dict[str, Any]] = channels.get("channels", []) if channels else []
-        if ch_list:
-            btc_cfg = get_cfg().get("bitcoin", {}).get("channel_health", {})
-            min_ratio = btc_cfg.get("min_local_ratio", 0.15)
-            max_ratio = btc_cfg.get("max_local_ratio", 0.85)
-            emoji, label = score_channel_health(ch_list)
-            lines.append(f"\nChannels: {emoji} {label}")
-            for ch in ch_list:
-                cap = int(ch.get("capacity", 0))
-                local = int(ch.get("local_balance", 0))
-                ratio = (local / cap) if cap > 0 else 0
-                pct = ratio * 100
-                if not ch.get("active"):
-                    dot = "\U0001f534"
-                elif ratio < min_ratio or ratio > max_ratio:
-                    dot = "\U0001f7e1"
-                else:
-                    dot = "\U0001f7e2"
-                lines.append(f"  {dot} {pct:.0f}% local")
-
-        # Wallet balance
-        balance = lnd_get("/v1/balance/channels")
-        if balance:
-            lb: Any = balance.get("local_balance", 0)
-            local_bal = int(lb.get("sat", 0)) if hasattr(lb, "get") else int(lb)
-            rb: Any = balance.get("remote_balance", 0)
-            remote_bal = int(rb.get("sat", 0)) if hasattr(rb, "get") else int(rb)
-            total_bal = local_bal + remote_bal
-            if total_bal > 0:
-                local_pct = local_bal / total_bal * 100
-                lines.append(f"\nBalance: {local_pct:.0f}% local / {100 - local_pct:.0f}% remote")
-
-    send_message(chat_id, "\n".join(lines))
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Active Response Commands (TOTP required)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -881,7 +752,7 @@ BOT_MENU = [
     ("security", "Security deep dive"),
     ("agents", "Agent list & status"),
     ("services", "Docker & service status"),
-    ("bitcoin", "Bitcoin & Lightning detail"),
+    *addon_menu,
     ("alerts", "Recent alerts (Level 8+)"),
     ("top", "Top triggered rules (24h)"),
     ("blocked", "Blocked IPs & ban history"),
@@ -906,7 +777,7 @@ COMMANDS: dict[str, Callable[[str, str], None]] = {
     "/status": lambda c, a: cmd_digest(c, title="\U0001f4cb Status Report"),
     "/system": lambda c, a: cmd_system(c),
     "/security": lambda c, a: cmd_security(c),
-    "/bitcoin": lambda c, a: cmd_bitcoin(c),
+    **addon_commands,
     "/event": cmd_event,
     "/agents": lambda c, a: cmd_agents(c),
     "/alerts": lambda c, a: cmd_alerts(c),
@@ -941,6 +812,7 @@ COMMAND_PROMPTS: dict[str, list[str]] = {
     "/lockdown": ["Enter TOTP code:"],
     "/restore": ["Enter TOTP code:"],
     "/shutdown": ["Enter TOTP code:"],
+    **addon_prompts,
 }
 
 _pending: dict[str, dict[str, Any]] = {}

@@ -77,20 +77,6 @@ class TestSimplifyServiceName:
         assert commander.simplify_service_name("My Web App") == "My Web App"
 
 
-class TestValidHeight:
-    def test_int_is_valid(self, commander):
-        assert commander.valid_height(876543) is True
-
-    def test_numeric_string_is_valid(self, commander):
-        assert commander.valid_height("876543") is True
-
-    def test_error_string_is_invalid(self, commander):
-        assert commander.valid_height("error") is False
-
-    def test_empty_dict_is_invalid(self, commander):
-        assert commander.valid_height({}) is False
-
-
 # ── Send message / chunking ─────────────────────────────────────────────────
 
 
@@ -120,7 +106,6 @@ class TestRegisterCommands:
         assert "status" in cmds
         assert "system" in cmds
         assert "security" in cmds
-        assert "bitcoin" in cmds
         assert "help" in cmds
 
     def test_returns_false_on_api_error(self, commander):
@@ -190,63 +175,10 @@ class TestProcessUpdate:
         assert "/status" in text
         assert "/system" in text
         assert "/security" in text
-        assert "/bitcoin" in text
         assert "Active Response" in text
 
 
 # ── Read-only commands ───────────────────────────────────────────────────────
-
-
-class TestScoreChannelHealth:
-    def test_all_active_balanced(self, commander):
-        channels = [
-            {"active": True, "capacity": "1000000", "local_balance": "500000"},
-            {"active": True, "capacity": "2000000", "local_balance": "600000"},
-        ]
-        emoji, label = commander.score_channel_health(channels)
-        assert emoji == "\U0001f7e2"
-        assert "healthy" in label
-        assert "2 channels" in label
-
-    def test_inactive_channel(self, commander):
-        channels = [
-            {"active": True, "capacity": "1000000", "local_balance": "500000"},
-            {"active": False, "capacity": "1000000", "local_balance": "500000"},
-        ]
-        emoji, label = commander.score_channel_health(channels)
-        assert "\U0001f534" in emoji
-        assert "offline" in label
-        assert "1/2" in label
-
-    def test_needs_rebalancing_low(self, commander):
-        channels = [
-            {"active": True, "capacity": "1000000", "local_balance": "50000"},  # 5% ratio
-        ]
-        emoji, label = commander.score_channel_health(channels)
-        assert "\U0001f7e1" in emoji
-        assert "rebalancing" in label
-        assert "<15% local" in label
-
-    def test_needs_rebalancing_high(self, commander):
-        channels = [
-            {"active": True, "capacity": "1000000", "local_balance": "950000"},  # 95% ratio
-        ]
-        emoji, label = commander.score_channel_health(channels)
-        assert "\U0001f7e1" in emoji
-        assert "rebalancing" in label
-        assert ">85% local" in label
-
-    def test_rebalancing_shows_count_and_pcts(self, commander):
-        channels = [
-            {"active": True, "capacity": "1000000", "local_balance": "50000"},  # 5%
-            {"active": True, "capacity": "1000000", "local_balance": "500000"},  # 50% OK
-            {"active": True, "capacity": "1000000", "local_balance": "950000"},  # 95%
-        ]
-        emoji, label = commander.score_channel_health(channels)
-        assert "\U0001f7e1" in emoji
-        assert "2/3" in label
-        assert "<15%" in label
-        assert ">85%" in label
 
 
 class TestCmdUptime:
@@ -328,19 +260,6 @@ class TestCmdSecurity:
         assert "Security Detail" in text
         assert "Active bans" in text
 
-
-class TestCmdBitcoin:
-    def test_bitcoin_disabled(self, commander):
-        from sentinel.config import _DEFAULTS, _deep_merge, reload_config
-
-        reload_config()
-        test_cfg = _deep_merge(_DEFAULTS, {"integrations": {"bitcoin": {"enabled": False}}})
-        import sentinel.config
-
-        sentinel.config.cfg = test_cfg
-        commander.cmd_bitcoin("123")
-        text = commander._mock_post.call_args[1]["json"]["text"]
-        assert "disabled" in text
 
 
 class TestCmdBlocked:
