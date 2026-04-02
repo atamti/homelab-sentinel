@@ -88,20 +88,88 @@ class TestAgentAlias:
         with _patch_config(tmp_path, cfg):
             assert sanitize.agent_alias("masterserver") == "masterserver"
 
-    def test_unknown_host_returns_original(self, tmp_path):
+    def test_unknown_host_returns_host(self, tmp_path):
         cfg = {"sanitization": {"hostnames": {"other": "alias"}}}
         with _patch_config(tmp_path, cfg):
-            assert sanitize.agent_alias("masterserver") == "masterserver"
+            assert sanitize.agent_alias("masterserver") == "host"
 
-    def test_no_config_returns_original(self, tmp_path):
+    def test_no_config_returns_host(self, tmp_path):
         cfg = {"sanitization": {}}
         with _patch_config(tmp_path, cfg):
-            assert sanitize.agent_alias("masterserver") == "masterserver"
+            assert sanitize.agent_alias("masterserver") == "host"
 
-    def test_old_list_format_returns_original(self, tmp_path):
+    def test_old_list_format_returns_host(self, tmp_path):
         cfg = {"sanitization": {"hostnames": ["masterserver"]}}
         with _patch_config(tmp_path, cfg):
-            assert sanitize.agent_alias("masterserver") == "masterserver"
+            assert sanitize.agent_alias("masterserver") == "host"
+
+
+# ── abbreviate_os ────────────────────────────────────────────────────────────
+
+
+class TestAbbreviateOS:
+    def test_windows_pro(self):
+        assert sanitize.abbreviate_os("Microsoft Windows 11 Pro") == "Windows 11"
+
+    def test_windows_10(self):
+        assert sanitize.abbreviate_os("Microsoft Windows 10 Enterprise") == "Windows 10"
+
+    def test_windows_server(self):
+        assert sanitize.abbreviate_os("Microsoft Windows Server 2022") == "Win Server 2022"
+
+    def test_windows_server_r2(self):
+        assert sanitize.abbreviate_os("Microsoft Windows Server 2008 R2") == "Win Server 2008 R2"
+
+    def test_ubuntu_lts(self):
+        assert sanitize.abbreviate_os("Ubuntu 24.04.2 LTS") == "Ubuntu 24.04"
+
+    def test_ubuntu_short(self):
+        assert sanitize.abbreviate_os("Ubuntu 22.04.5 LTS") == "Ubuntu 22.04"
+
+    def test_debian(self):
+        assert sanitize.abbreviate_os("Debian GNU/Linux 12") == "Debian 12"
+
+    def test_rhel(self):
+        assert sanitize.abbreviate_os("Red Hat Enterprise Linux 9") == "RHEL 9"
+
+    def test_centos(self):
+        assert sanitize.abbreviate_os("CentOS Linux 8") == "CentOS 8"
+
+    def test_rocky(self):
+        assert sanitize.abbreviate_os("Rocky Linux 9") == "Rocky 9"
+
+    def test_alma(self):
+        assert sanitize.abbreviate_os("AlmaLinux 9") == "AlmaLinux 9"
+
+    def test_fedora(self):
+        assert sanitize.abbreviate_os("Fedora 40") == "Fedora 40"
+
+    def test_arch(self):
+        assert sanitize.abbreviate_os("Arch Linux") == "Arch"
+
+    def test_macos(self):
+        assert sanitize.abbreviate_os("macOS 14.0") == "macOS 14.0"
+
+    def test_opensuse(self):
+        assert sanitize.abbreviate_os("openSUSE Leap 15.6") == "openSUSE 15.6"
+
+    def test_sles(self):
+        assert sanitize.abbreviate_os("SUSE Linux Enterprise Server 15") == "SLES 15"
+
+    def test_amazon(self):
+        assert sanitize.abbreviate_os("Amazon Linux 2023") == "Amazon Linux 2023"
+
+    def test_raspbian(self):
+        assert sanitize.abbreviate_os("Raspbian 12 (bookworm)") == "Raspbian 12"
+
+    def test_kali(self):
+        assert sanitize.abbreviate_os("Kali GNU/Linux 2024.1") == "Kali 2024"
+
+    def test_unknown_passes_through(self):
+        assert sanitize.abbreviate_os("SomeUnknownOS 1.0") == "SomeUnknownOS 1.0"
+
+    def test_question_mark_passes_through(self):
+        assert sanitize.abbreviate_os("?") == "?"
 
 
 # ── scrub_internal_ips ───────────────────────────────────────────────────────

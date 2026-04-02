@@ -24,50 +24,71 @@ class TestFormatTableRow:
         assert "L8" in result
         assert "SSH brute force" in result
 
+    def test_strips_wazuh_variables(self, commander):
+        result = commander.format_table_row("100700", 10, 3, "Web attack: 5 x hits in 60s from $(srcip)")
+        assert "$(srcip)" not in result
+        assert "Web attack" in result
+
+
+class TestCleanRuleDesc:
+    def test_strips_srcip(self, commander):
+        assert commander.clean_rule_desc("5 x hits from $(srcip)") == "5 x hits from"
+
+    def test_strips_multiple_vars(self, commander):
+        result = commander.clean_rule_desc("$(srcip) to $(dstip) on port $(dstport)")
+        assert result == "to on port"
+
+    def test_collapses_double_spaces(self, commander):
+        result = commander.clean_rule_desc("attack from  $(srcip)  detected")
+        assert "  " not in result
+
+    def test_no_vars_unchanged(self, commander):
+        assert commander.clean_rule_desc("SSH brute force") == "SSH brute force"
+
 
 class TestRag:
     def test_green_below_amber(self, commander):
-        assert commander._rag(0.5, 1.0, 2.0) == "\U0001f7e2"
+        assert commander.rag(0.5, 1.0, 2.0) == "\U0001f7e2"
 
     def test_amber_between(self, commander):
-        assert commander._rag(1.5, 1.0, 2.0) == "\U0001f7e1"
+        assert commander.rag(1.5, 1.0, 2.0) == "\U0001f7e1"
 
     def test_red_above(self, commander):
-        assert commander._rag(3.0, 1.0, 2.0) == "\U0001f534"
+        assert commander.rag(3.0, 1.0, 2.0) == "\U0001f534"
 
     def test_exact_amber_threshold(self, commander):
-        assert commander._rag(1.0, 1.0, 2.0) == "\U0001f7e1"
+        assert commander.rag(1.0, 1.0, 2.0) == "\U0001f7e1"
 
     def test_exact_red_threshold(self, commander):
-        assert commander._rag(2.0, 1.0, 2.0) == "\U0001f534"
+        assert commander.rag(2.0, 1.0, 2.0) == "\U0001f534"
 
 
 class TestSimplifyServiceName:
     def test_strips_http_prefix(self, commander):
-        assert commander._simplify_service_name("HTTP - myservice.local") == "myservice"
+        assert commander.simplify_service_name("HTTP - myservice.local") == "myservice"
 
     def test_strips_url_protocol(self, commander):
-        assert commander._simplify_service_name("https://myapp.local:8080/health") == "myapp"
+        assert commander.simplify_service_name("https://myapp.local:8080/health") == "myapp"
 
     def test_strips_tcp_prefix(self, commander):
-        assert commander._simplify_service_name("TCP Port - 10.0.0.1:22") == "10.0.0.1"
+        assert commander.simplify_service_name("TCP Port - 10.0.0.1:22") == "10.0.0.1"
 
     def test_plain_name_unchanged(self, commander):
-        assert commander._simplify_service_name("My Web App") == "My Web App"
+        assert commander.simplify_service_name("My Web App") == "My Web App"
 
 
 class TestValidHeight:
     def test_int_is_valid(self, commander):
-        assert commander._valid_height(876543) is True
+        assert commander.valid_height(876543) is True
 
     def test_numeric_string_is_valid(self, commander):
-        assert commander._valid_height("876543") is True
+        assert commander.valid_height("876543") is True
 
     def test_error_string_is_invalid(self, commander):
-        assert commander._valid_height("error") is False
+        assert commander.valid_height("error") is False
 
     def test_empty_dict_is_invalid(self, commander):
-        assert commander._valid_height({}) is False
+        assert commander.valid_height({}) is False
 
 
 # ── Send message / chunking ─────────────────────────────────────────────────
@@ -375,7 +396,7 @@ class TestCmdAlerts:
         sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         assert len(sent) >= 1
         text = sent[0][1]["json"]["text"]
-        assert "server1" in text
+        assert "host" in text
         assert "Rule 5710" in text
         assert "SSH brute force" in text
 
@@ -429,7 +450,7 @@ class TestCmdEvent:
         assert "A" * 150 in text
         assert "A" * 151 not in text
         assert "..." in text
-        assert "<b>Agent:</b> server1" in text
+        assert "<b>Agent:</b> host" in text
 
 
 # ── Active response commands ─────────────────────────────────────────────────
@@ -501,12 +522,14 @@ class TestCmdSyscheck:
         scan_resp.status_code = 200
         # requests.put returns the put_resp; requests.get returns token then scan
         import requests as req_mod
+        import sys
 
+        cmds = sys.modules["sentinel.commands"]
         with (
             patch.object(req_mod, "put", return_value=put_resp),
             patch.object(req_mod, "get", return_value=scan_resp),
-            patch.object(commander, "get_wazuh_token", return_value="fake-token"),
-            patch.object(commander, "wazuh_get", return_value=scan_resp.json.return_value),
+            patch.object(cmds, "get_wazuh_token", return_value="fake-token"),
+            patch.object(cmds, "wazuh_get", return_value=scan_resp.json.return_value),
             patch("time.sleep"),
         ):
             commander.cmd_syscheck("123", f"001 {code}")
@@ -522,11 +545,13 @@ class TestCmdSyscheck:
         # Poll response — scan never finishes (no "end")
         scan_data = {"data": {"affected_items": [{"start": "2026-03-10T10:00:00Z"}]}}
         import requests as req_mod
+        import sys
 
+        cmds = sys.modules["sentinel.commands"]
         with (
             patch.object(req_mod, "put", return_value=put_resp),
-            patch.object(commander, "get_wazuh_token", return_value="fake-token"),
-            patch.object(commander, "wazuh_get", return_value=scan_data),
+            patch.object(cmds, "get_wazuh_token", return_value="fake-token"),
+            patch.object(cmds, "wazuh_get", return_value=scan_data),
             patch("time.sleep"),
         ):
             commander.cmd_syscheck("123", f"001 {code}")

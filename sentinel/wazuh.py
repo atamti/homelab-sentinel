@@ -1,5 +1,7 @@
 """Wazuh Manager API and OpenSearch indexer helpers."""
 
+from typing import Any
+
 import requests
 import urllib3
 
@@ -15,13 +17,13 @@ def get_token(api_url: str, user: str, password: str) -> str | None:
             verify=False,
             timeout=10,
         )
-        data: dict = r.json()
+        data: dict[str, Any] = r.json()
         return str(data["data"]["token"])
     except Exception:
         return None
 
 
-def api_get(api_url: str, endpoint: str, token: str) -> dict:
+def api_get(api_url: str, endpoint: str, token: str) -> dict[str, Any]:
     """GET a Wazuh Manager API endpoint."""
     try:
         r = requests.get(
@@ -30,13 +32,13 @@ def api_get(api_url: str, endpoint: str, token: str) -> dict:
             verify=False,
             timeout=10,
         )
-        result: dict = r.json()
+        result: dict[str, Any] = r.json()
         return result
     except Exception:
         return {}
 
 
-def indexer_search(indexer_url: str, user: str, password: str, query: dict) -> dict:
+def indexer_search(indexer_url: str, user: str, password: str, query: dict[str, Any]) -> dict[str, Any]:
     """Search the Wazuh OpenSearch indexer."""
     try:
         r = requests.post(
@@ -46,7 +48,7 @@ def indexer_search(indexer_url: str, user: str, password: str, query: dict) -> d
             verify=False,
             timeout=10,
         )
-        result: dict = r.json()
+        result: dict[str, Any] = r.json()
         return result
     except Exception:
         return {}

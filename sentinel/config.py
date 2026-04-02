@@ -1,6 +1,7 @@
 """Shared configuration helpers and constants."""
 
 import os
+from typing import Any
 
 import yaml
 
@@ -155,10 +156,10 @@ _DEFAULTS = {
     },
 }
 
-_raw_config: dict | None = None
+_raw_config: dict[str, Any] | None = None
 
 
-def _deep_merge(defaults: dict, overrides: dict) -> dict:
+def _deep_merge(defaults: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge overrides into defaults (overrides win)."""
     result = dict(defaults)
     for key, val in overrides.items():
@@ -169,7 +170,7 @@ def _deep_merge(defaults: dict, overrides: dict) -> dict:
     return result
 
 
-def _load_yaml() -> dict:
+def _load_yaml() -> dict[str, Any]:
     """Load raw YAML config from disk. Returns empty dict on failure."""
     global _raw_config
     if _raw_config is not None:
@@ -185,7 +186,7 @@ def _load_yaml() -> dict:
     return _raw_config
 
 
-def load_config() -> dict:
+def load_config() -> dict[str, Any]:
     """Return the full config dict, merged with defaults."""
     return _deep_merge(_DEFAULTS, _load_yaml())
 
@@ -198,10 +199,10 @@ def reload_config() -> None:
 
 
 # Convenience accessor
-cfg = None  # Will be a dict; initialized lazily
+cfg: dict[str, Any] | None = None
 
 
-def get_cfg() -> dict:
+def get_cfg() -> dict[str, Any]:
     """Return the cached config, loading on first access."""
     global cfg
     if cfg is None:

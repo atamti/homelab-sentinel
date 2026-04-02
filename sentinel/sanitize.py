@@ -36,15 +36,52 @@ def agent_alias(name: str) -> str:
     Reads the sanitization.hostnames config dict:
     - If the hostname maps to a string value, return that alias.
     - If the hostname maps to null, return the original name (no redaction here).
-    - If the hostname is not configured, return the original name.
+    - If the hostname is not configured, return 'host' (generic fallback).
     """
     cfg = _san_config()
     hostnames = cfg.get("hostnames") or cfg.get("internal_hostnames") or {}
     if isinstance(hostnames, list):
-        return name
+        return "host"
     for hostname, display in hostnames.items():
-        if hostname and hostname.lower() == name.lower() and display:
-            return str(display)
+        if hostname and hostname.lower() == name.lower():
+            return str(display) if display else name
+    return "host"
+
+
+# ── OS abbreviation ──────────────────────────────────────────────────────────
+
+_OS_ABBREVIATIONS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"Microsoft Windows Server (\d+(?:\s*R2)?)", re.IGNORECASE), r"Win Server \1"),
+    (re.compile(r"Microsoft Windows (\d+)\b.*", re.IGNORECASE), r"Windows \1"),
+    (re.compile(r"Red Hat Enterprise Linux\s*(\d+).*", re.IGNORECASE), r"RHEL \1"),
+    (re.compile(r"Ubuntu (\d+\.\d+).*", re.IGNORECASE), r"Ubuntu \1"),
+    (re.compile(r"Debian GNU/Linux\s*(\d+).*", re.IGNORECASE), r"Debian \1"),
+    (re.compile(r"CentOS(?:\s+Linux)?\s*(\d+).*", re.IGNORECASE), r"CentOS \1"),
+    (re.compile(r"Rocky Linux\s*(\d+).*", re.IGNORECASE), r"Rocky \1"),
+    (re.compile(r"AlmaLinux\s*(\d+).*", re.IGNORECASE), r"AlmaLinux \1"),
+    (re.compile(r"Amazon Linux\s*(\d+).*", re.IGNORECASE), r"Amazon Linux \1"),
+    (re.compile(r"Oracle Linux\s*(\d+).*", re.IGNORECASE), r"Oracle \1"),
+    (re.compile(r"openSUSE Leap\s*([\d.]+).*", re.IGNORECASE), r"openSUSE \1"),
+    (re.compile(r"SUSE Linux Enterprise Server\s*(\d+).*", re.IGNORECASE), r"SLES \1"),
+    (re.compile(r"Fedora\b.*?(\d+).*", re.IGNORECASE), r"Fedora \1"),
+    (re.compile(r"Arch Linux.*", re.IGNORECASE), "Arch"),
+    (re.compile(r"macOS\s+([\d.]+).*", re.IGNORECASE), r"macOS \1"),
+    (re.compile(r"Raspbian.*?(\d+).*", re.IGNORECASE), r"Raspbian \1"),
+    (re.compile(r"Kali GNU/Linux\s*(\d+).*", re.IGNORECASE), r"Kali \1"),
+]
+
+
+def abbreviate_os(name: str) -> str:
+    """Shorten a full OS name to a compact abbreviation.
+
+    e.g. 'Microsoft Windows 11 Pro' → 'Windows 11'
+         'Ubuntu 24.04.2 LTS' → 'Ubuntu 24.04'
+    Returns the original string if no pattern matches.
+    """
+    for pattern, replacement in _OS_ABBREVIATIONS:
+        m = pattern.fullmatch(name)
+        if m:
+            return m.expand(replacement)
     return name
 
 

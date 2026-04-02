@@ -22,7 +22,6 @@ Environment variables are loaded from /etc/homelab-sentinel.env
 """
 
 import contextlib
-import fcntl
 import json
 import os
 import subprocess
@@ -38,6 +37,9 @@ DEBUG_LOG = None  # set to "/tmp/ar_debug.log" to enable verbose trace
 _SENTINEL_LIB = os.environ.get("SENTINEL_LIB", "/var/ossec/integrations")
 if _SENTINEL_LIB not in sys.path:
     sys.path.insert(0, _SENTINEL_LIB)
+
+from sentinel.ban_state import load_state, record_ban, remove_ban_record, save_state
+from sentinel.firewall import ban_ip, deduplicate_iptables, is_already_banned, unban_ip
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -115,97 +117,7 @@ def is_duplicate(ip: str, ttl: int = 10) -> bool:
     return False
 
 
-def is_already_banned(ip: str) -> bool:
-    """Return True if a DROP rule for this IP already exists in iptables INPUT chain."""
-    try:
-        result = subprocess.run(
-            ["iptables", "-C", "INPUT", "-s", ip, "-j", "DROP"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return result.returncode == 0
-    except Exception as e:
-        debug_log(f"iptables -C check failed for {ip}: {e}")
-        return False  # fail open — proceed with handshake
-
-
 # ── Ban state tracking ───────────────────────────────────────────────────────
-
-
-def _state_path() -> str:
-    """Return the path to the active-bans JSON state file."""
-    try:
-        from sentinel.config import get_cfg
-
-        return get_cfg()["active_response"]["ban_state_file"]
-    except Exception:
-        return "/var/ossec/logs/active-bans.json"
-
-
-def load_state() -> dict:
-    """Load active-bans state from disk.  Returns {} on any error."""
-    path = _state_path()
-    try:
-        with open(path) as f:
-            fcntl.flock(f, fcntl.LOCK_SH)
-            data = json.load(f)
-            fcntl.flock(f, fcntl.LOCK_UN)
-            return data
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-    except Exception as e:
-        debug_log(f"load_state error: {e}")
-        return {}
-
-
-def save_state(state: dict) -> None:
-    """Atomically write active-bans state to disk."""
-    path = _state_path()
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            json.dump(state, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-            fcntl.flock(f, fcntl.LOCK_UN)
-        os.replace(tmp, path)
-    except Exception as e:
-        _log_error(f"save_state error: {e}")
-        debug_log(f"save_state error: {e}")
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp)
-
-
-def record_ban(ip: str, rule_id: str, ttl: int | None = None) -> None:
-    """Record a ban in the state file and schedule an at-job for auto-unban."""
-    if ttl is None:
-        try:
-            from sentinel.config import get_cfg
-
-            ttl = get_cfg()["active_response"]["ban_timeout_seconds"]
-        except Exception:
-            ttl = 600
-
-    state = load_state()
-    state[ip] = {
-        "banned_at": time.time(),
-        "ttl": ttl,
-        "rule_id": rule_id,
-    }
-    save_state(state)
-    debug_log(f"state: recorded ban for {ip} (ttl={ttl}s)")
-
-    _schedule_at_unban(ip, ttl)
-
-
-def remove_ban_record(ip: str) -> None:
-    """Remove an IP from the state file."""
-    state = load_state()
-    if ip in state:
-        del state[ip]
-        save_state(state)
-        debug_log(f"state: removed {ip}")
 
 
 def _schedule_at_unban(ip: str, ttl: int) -> None:
@@ -303,76 +215,6 @@ def cli_unban(ip: str) -> None:
             send_telegram(full_log_chat, message)
     except Exception as exc:
         debug_log(f"cli_unban notification error: {exc}")
-
-
-def deduplicate_iptables() -> int:
-    """Remove duplicate DROP rules from iptables INPUT chain.
-
-    Returns count of duplicates removed.
-    Reads current rules via iptables-save, deduplicates, restores.
-    Intended for manual / cron use, not called in the main flow.
-    """
-    try:
-        raw = subprocess.run(
-            ["iptables-save"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-        seen: set[str] = set()
-        deduped_lines: list[str] = []
-        removed = 0
-        for line in raw.splitlines():
-            if line.startswith("-A INPUT") and "-j DROP" in line:
-                if line in seen:
-                    removed += 1
-                    continue
-                seen.add(line)
-            deduped_lines.append(line)
-        if removed:
-            subprocess.run(
-                ["iptables-restore"],
-                input="\n".join(deduped_lines) + "\n",
-                text=True,
-                check=True,
-            )
-            debug_log(f"deduplicate_iptables: removed {removed} duplicate(s)")
-        return removed
-    except Exception as e:
-        debug_log(f"deduplicate_iptables error: {e}")
-        return 0
-
-
-def ban_ip(ip: str) -> bool:
-    """Ban an IP via iptables.  Returns True on success."""
-    try:
-        subprocess.run(
-            ["iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"],
-            check=True,
-            capture_output=True,
-        )
-        debug_log(f"iptables: banned {ip}")
-        return True
-    except Exception as e:
-        _log_error(f"iptables ban failed for {ip}: {e}")
-        debug_log(f"iptables ban error: {e}")
-        return False
-
-
-def unban_ip(ip: str) -> bool:
-    """Remove iptables DROP rule for IP.  Returns True on success."""
-    try:
-        subprocess.run(
-            ["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"],
-            check=True,
-            capture_output=True,
-        )
-        debug_log(f"iptables: unbanned {ip}")
-        return True
-    except Exception as e:
-        _log_error(f"iptables unban failed for {ip}: {e}")
-        debug_log(f"iptables unban error: {e}")
-        return False
 
 
 def _extract_ip(data: dict) -> str:
@@ -482,7 +324,8 @@ def _notify(action: str, ip: str, data: dict) -> None:
             return
 
         write_ban_log(ip, rule_id)
-        record_ban(ip, rule_id)
+        ttl = record_ban(ip, rule_id)
+        _schedule_at_unban(ip, ttl)
 
         message = (
             f"🔨 <b>Active Response: Banned</b>\n"

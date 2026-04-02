@@ -340,21 +340,18 @@ class TestBanState:
         assert state["1.2.3.4"]["ttl"] == 600
 
     def test_record_ban_writes_state(self, notify_ban):
-        with patch.object(notify_ban, "_schedule_at_unban"):
-            notify_ban.record_ban("10.0.0.1", "5763", ttl=300)
+        notify_ban.record_ban("10.0.0.1", "5763", ttl=300)
         state = notify_ban.load_state()
         assert "10.0.0.1" in state
         assert state["10.0.0.1"]["ttl"] == 300
         assert state["10.0.0.1"]["rule_id"] == "5763"
 
-    def test_record_ban_schedules_at(self, notify_ban):
-        with patch.object(notify_ban, "_schedule_at_unban") as mock_at:
-            notify_ban.record_ban("10.0.0.2", "5710", ttl=600)
-        mock_at.assert_called_once_with("10.0.0.2", 600)
+    def test_record_ban_returns_ttl(self, notify_ban):
+        ttl = notify_ban.record_ban("10.0.0.2", "5710", ttl=600)
+        assert ttl == 600
 
     def test_remove_ban_record(self, notify_ban):
-        with patch.object(notify_ban, "_schedule_at_unban"):
-            notify_ban.record_ban("10.0.0.3", "100")
+        notify_ban.record_ban("10.0.0.3", "100")
         notify_ban.remove_ban_record("10.0.0.3")
         state = notify_ban.load_state()
         assert "10.0.0.3" not in state
