@@ -122,15 +122,8 @@ def _init_hook(**deps: Any) -> None:
     send_message = deps.get("send_message")
 
 
-def cmd_bitcoin(chat_id: str, _arg: str = "") -> None:
-    cfg = get_cfg()
-    if not cfg["integrations"]["bitcoin"]["enabled"]:
-        send_message(chat_id, "Bitcoin integration is disabled")
-        return
-
-    lines = ["<b>\u20bf Bitcoin Detail</b>\n"]
-
-    # Block height
+def _block_height_line(cfg: dict[str, Any]) -> str:
+    """Return a formatted block-height status line."""
     local_height = mempool_get("/api/blocks/tip/height")
     public_height = mempool_get("/api/blocks/tip/height", public=True)
     lag_threshold = cfg["digest"]["bitcoin_lag_warning_blocks"]
@@ -140,15 +133,25 @@ def cmd_bitcoin(chat_id: str, _arg: str = "") -> None:
     if local_ok and public_ok:
         lag = int(str(public_height)) - int(str(local_height))
         if lag > lag_threshold:
-            lines.append(f"\U0001f7e1 Block height: {local_height} (lagging {lag} blocks)")
-        else:
-            lines.append(f"\U0001f7e2 Block height: {local_height}")
-    elif public_ok:
-        lines.append(f"\U0001f7e1 Block height: {public_height} (local node unreachable)")
-    elif local_ok:
-        lines.append(f"\U0001f7e1 Block height: {local_height} (public API unreachable)")
-    else:
-        lines.append("\U0001f534 Block height: unavailable")
+            return f"\U0001f7e1 Block height: {local_height} (lagging {lag} blocks)"
+        return f"\U0001f7e2 Block height: {local_height}"
+    if public_ok:
+        return f"\U0001f7e1 Block height: {public_height} (local node unreachable)"
+    if local_ok:
+        return f"\U0001f7e1 Block height: {local_height} (public API unreachable)"
+    return "\U0001f534 Block height: unavailable"
+
+
+def cmd_bitcoin(chat_id: str, _arg: str = "") -> None:
+    cfg = get_cfg()
+    if not cfg["integrations"]["bitcoin"]["enabled"]:
+        send_message(chat_id, "Bitcoin integration is disabled")
+        return
+
+    lines = ["<b>\u20bf Bitcoin Detail</b>\n"]
+
+    # Block height
+    lines.append(_block_height_line(cfg))
 
     # Fees
     fees = mempool_get("/api/v1/fees/recommended")
@@ -229,24 +232,7 @@ def digest_bitcoin(cfg: dict[str, Any], lines: list[str]) -> None:
 
     lines.append("<b>\u20bf Bitcoin</b>")
 
-    local_height = mempool_get("/api/blocks/tip/height")
-    public_height = mempool_get("/api/blocks/tip/height", public=True)
-    lag_threshold = cfg["digest"]["bitcoin_lag_warning_blocks"]
-    local_ok = valid_height(local_height)
-    public_ok = valid_height(public_height)
-
-    if local_ok and public_ok:
-        lag = int(str(public_height)) - int(str(local_height))
-        if lag > lag_threshold:
-            lines.append(f"\U0001f7e1 Block height: {local_height} (lagging {lag} blocks)")
-        else:
-            lines.append(f"\U0001f7e2 Block height: {local_height}")
-    elif public_ok:
-        lines.append(f"\U0001f7e1 Block height: {public_height} (local node unreachable)")
-    elif local_ok:
-        lines.append(f"\U0001f7e1 Block height: {local_height} (public API unreachable)")
-    else:
-        lines.append("\U0001f534 Block height: unavailable")
+    lines.append(_block_height_line(cfg))
 
     fees = mempool_get("/api/v1/fees/recommended")
     if isinstance(fees, dict):
