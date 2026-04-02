@@ -11,6 +11,7 @@ helpers, config strings) are injected at startup by
 import os
 import re
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -724,20 +725,23 @@ def cmd_syscheck(chat_id: str, arg: str) -> None:
     if resp.status_code != 200:
         send_message(chat_id, f"\u26d4 Failed to start syscheck: HTTP {resp.status_code}")
         return
-    send_message(chat_id, f"\u23f3 Integrity scan started on agent {agent_id}, polling...")
-    # Poll for completion (up to 5 minutes)
-    for _ in range(30):
-        time.sleep(10)
-        token = get_wazuh_token()
-        if not token:
-            break
-        scan = wazuh_get(f"/syscheck/{agent_id}/last_scan", token)
-        status = scan.get("data", {}).get("affected_items", [{}])[0]
-        if status.get("end"):
-            end_time = status["end"]
-            send_message(chat_id, f"\u2705 Syscheck completed on agent {agent_id} at {end_time}")
-            return
-    send_message(chat_id, f"\u23f3 Syscheck still running on agent {agent_id} (timeout waiting)")
+    send_message(chat_id, f"\u23f3 Integrity scan started on agent {agent_id} (will notify when done)")
+
+    def _poll_syscheck() -> None:
+        for _ in range(30):
+            time.sleep(10)
+            t = get_wazuh_token()
+            if not t:
+                break
+            scan = wazuh_get(f"/syscheck/{agent_id}/last_scan", t)
+            status = scan.get("data", {}).get("affected_items", [{}])[0]
+            if status.get("end"):
+                end_time = status["end"]
+                send_message(chat_id, f"\u2705 Syscheck completed on agent {agent_id} at {end_time}")
+                return
+        send_message(chat_id, f"\u23f3 Syscheck still running on agent {agent_id} (timeout waiting)")
+
+    threading.Thread(target=_poll_syscheck, daemon=True).start()
 
 
 def cmd_shutdown(chat_id: str, arg: str) -> None:

@@ -442,16 +442,21 @@ class TestCmdSyscheck:
         # requests.put returns the put_resp; requests.get returns token then scan
         import requests as req_mod
         import sys
+        import threading
 
         cmds = sys.modules["sentinel.commands"]
+        threads_before = set(threading.enumerate())
         with (
             patch.object(req_mod, "put", return_value=put_resp),
             patch.object(req_mod, "get", return_value=scan_resp),
             patch.object(cmds, "get_wazuh_token", return_value="fake-token"),
             patch.object(cmds, "wazuh_get", return_value=scan_resp.json.return_value),
-            patch("time.sleep"),
+            patch.object(cmds.time, "sleep"),
         ):
             commander.cmd_syscheck("123", f"001 {code}")
+            # Wait for the background polling thread to finish
+            for t in set(threading.enumerate()) - threads_before:
+                t.join(timeout=5)
         sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         texts = [c[1]["json"]["text"] for c in sent]
         assert any("started" in t for t in texts)
@@ -465,15 +470,19 @@ class TestCmdSyscheck:
         scan_data = {"data": {"affected_items": [{"start": "2026-03-10T10:00:00Z"}]}}
         import requests as req_mod
         import sys
+        import threading
 
         cmds = sys.modules["sentinel.commands"]
+        threads_before = set(threading.enumerate())
         with (
             patch.object(req_mod, "put", return_value=put_resp),
             patch.object(cmds, "get_wazuh_token", return_value="fake-token"),
             patch.object(cmds, "wazuh_get", return_value=scan_data),
-            patch("time.sleep"),
+            patch.object(cmds.time, "sleep"),
         ):
             commander.cmd_syscheck("123", f"001 {code}")
+            for t in set(threading.enumerate()) - threads_before:
+                t.join(timeout=5)
         sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
         texts = [c[1]["json"]["text"] for c in sent]
         assert any("still running" in t for t in texts)
