@@ -143,7 +143,10 @@ def commander(monkeypatch, tmp_path):
         # don't try to open /var/ossec paths.
         test_cfg = _deep_merge(
             _DEFAULTS,
-            {"active_response": {"ban_log": str(ban_log)}},
+            {"active_response": {
+                "ban_log": str(ban_log),
+                "ban_state_file": str(tmp_path / "active-bans.json"),
+            }},
         )
         monkeypatch.setattr("sentinel.config.cfg", test_cfg)
         mod._mock_post = mock_post

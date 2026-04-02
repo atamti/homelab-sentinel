@@ -25,7 +25,9 @@ from sentinel.addons import (
     addon_menu,
     addon_prompts,
 )
+from sentinel.ban_state import record_ban, remove_ban_record
 from sentinel.config import VERSION, get_cfg
+from sentinel.firewall import ban_ip, is_already_banned, unban_ip
 from sentinel.sanitize import abbreviate_os, agent_alias, summarize_docker_output
 from sentinel.security import (
     clean_rule_desc,
@@ -602,7 +604,13 @@ def cmd_block(chat_id: str, arg: str) -> None:
     except ValueError:
         send_message(chat_id, f"\u26d4 Invalid IP address: {esc(ip)}")
         return
-    subprocess.run(["iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"], check=True)
+    if is_already_banned(ip):
+        send_message(chat_id, f"\u26a0\ufe0f <code>{ip}</code> is already blocked")
+        return
+    if not ban_ip(ip):
+        send_message(chat_id, f"\u26d4 Failed to block <code>{ip}</code>")
+        return
+    record_ban(ip, rule_id="manual")
     log(f"block: manually blocked {ip}")
     send_message(chat_id, f"\U0001f6ab Blocked <code>{ip}</code>")
 
@@ -616,13 +624,12 @@ def cmd_unblock(chat_id: str, arg: str) -> None:
     except ValueError:
         send_message(chat_id, f"\u26d4 Invalid IP address: {esc(ip)}")
         return
-    result = subprocess.run(
-        ["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"],
-        capture_output=True,
-        text=True,
-    )
+    if not unban_ip(ip):
+        send_message(chat_id, f"\u26a0\ufe0f <code>{ip}</code> was not blocked")
+        return
+    remove_ban_record(ip)
     log(f"unblock: {ip}")
-    send_message(chat_id, f"\u2705 Unblocked <code>{ip}</code>\n{result.stderr}")
+    send_message(chat_id, f"\u2705 Unblocked <code>{ip}</code>")
 
 
 def cmd_closeport(chat_id: str, arg: str) -> None:
