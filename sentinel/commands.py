@@ -443,7 +443,8 @@ def cmd_blocked(chat_id: str, arg: str = "") -> None:
     send_message(chat_id, f"<b>Recent Bans (page {page})</b>\n<pre>{esc(recent) or 'None'}</pre>")
 
 
-def cmd_disk(chat_id: str) -> None:
+def _format_disk_table() -> str:
+    """Return a formatted disk usage table."""
     raw = subprocess.getoutput("df -h --exclude-type=tmpfs --exclude-type=devtmpfs")
     lines = raw.splitlines()
     out = [f"{'Drive':<10} {'Size':>5} {'Used':>5} {'Avail':>5} {'Use%':>5}  Mounted on"]
@@ -452,7 +453,11 @@ def cmd_disk(chat_id: str) -> None:
         if len(cols) >= 6:
             mount = " ".join(cols[5:])
             out.append(f"{'Drive ' + str(i):<10} {cols[1]:>5} {cols[2]:>5} {cols[3]:>5} {cols[4]:>5}  {mount}")
-    send_message(chat_id, f"<b>Disk Usage</b>\n\n<pre>{esc(chr(10).join(out))}</pre>")
+    return chr(10).join(out)
+
+
+def cmd_disk(chat_id: str) -> None:
+    send_message(chat_id, f"<b>Disk Usage</b>\n\n<pre>{esc(_format_disk_table())}</pre>")
 
 
 def cmd_uptime(chat_id: str) -> None:
@@ -500,16 +505,9 @@ def cmd_system(chat_id: str) -> None:
     lines.extend(format_system_rag_lines(stats, th))
 
     # Detailed disk breakdown
-    raw = subprocess.getoutput("df -h --exclude-type=tmpfs --exclude-type=devtmpfs")
-    disk_lines = raw.splitlines()
-    if len(disk_lines) > 1:
-        out = [f"{'Drive':<10} {'Size':>5} {'Used':>5} {'Avail':>5} {'Use%':>5}  Mounted on"]
-        for i, line in enumerate(disk_lines[1:], 1):
-            cols = line.split()
-            if len(cols) >= 6:
-                mount = " ".join(cols[5:])
-                out.append(f"{'Drive ' + str(i):<10} {cols[1]:>5} {cols[2]:>5} {cols[3]:>5} {cols[4]:>5}  {mount}")
-        lines.append(f"\n<pre>{esc(chr(10).join(out))}</pre>")
+    disk_table = _format_disk_table()
+    if disk_table:
+        lines.append(f"\n<pre>{esc(disk_table)}</pre>")
 
     # Top processes
     top_procs = subprocess.getoutput("ps -eo pid,pcpu,pmem,comm --sort=-pcpu --no-headers | head -5")
