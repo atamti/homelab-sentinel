@@ -1,13 +1,19 @@
 """Low-level iptables helpers for firewall management."""
 
+import ipaddress
 import subprocess
+
+
+def _iptables_cmd(ip: str) -> str:
+    """Return 'iptables' for IPv4 or 'ip6tables' for IPv6."""
+    return "ip6tables" if isinstance(ipaddress.ip_address(ip), ipaddress.IPv6Address) else "iptables"
 
 
 def ban_ip(ip: str) -> bool:
     """Insert a DROP rule for *ip* in the INPUT chain. Returns True on success."""
     try:
         subprocess.run(
-            ["iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"],
+            [_iptables_cmd(ip), "-I", "INPUT", "-s", ip, "-j", "DROP"],
             check=True,
             capture_output=True,
         )
@@ -20,7 +26,7 @@ def unban_ip(ip: str) -> bool:
     """Remove the DROP rule for *ip* from the INPUT chain. Returns True on success."""
     try:
         subprocess.run(
-            ["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"],
+            [_iptables_cmd(ip), "-D", "INPUT", "-s", ip, "-j", "DROP"],
             check=True,
             capture_output=True,
         )
@@ -30,10 +36,10 @@ def unban_ip(ip: str) -> bool:
 
 
 def is_already_banned(ip: str) -> bool:
-    """Return True if a DROP rule for *ip* already exists in iptables INPUT chain."""
+    """Return True if a DROP rule for *ip* already exists in the INPUT chain."""
     try:
         result = subprocess.run(
-            ["iptables", "-C", "INPUT", "-s", ip, "-j", "DROP"],
+            [_iptables_cmd(ip), "-C", "INPUT", "-s", ip, "-j", "DROP"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
