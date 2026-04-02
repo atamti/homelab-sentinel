@@ -8,6 +8,7 @@ helpers, config strings) are injected at startup by
 ``telegram-commander.py`` via :func:`init`.
 """
 
+import functools
 import os
 import re
 import subprocess
@@ -662,15 +663,21 @@ def cmd_openport(chat_id: str, arg: str) -> None:
 def cmd_lockdown(chat_id: str, arg: str) -> None:
     if not require_totp_only(chat_id, arg):
         return
-    subprocess.getoutput("cp /etc/ufw/user.rules /etc/ufw/user.rules.pre-lockdown")
-    subprocess.getoutput("cp /etc/ufw/user6.rules /etc/ufw/user6.rules.pre-lockdown")
-    subprocess.getoutput("ufw --force reset")
-    subprocess.getoutput("ufw default deny incoming")
-    subprocess.getoutput("ufw default deny outgoing")
-    subprocess.getoutput("ufw allow in 22/tcp")
-    subprocess.getoutput("ufw allow out 53")
-    subprocess.getoutput("ufw allow out 443/tcp")
-    subprocess.getoutput("ufw --force enable")
+    run = functools.partial(subprocess.run, check=True, capture_output=True, text=True)
+    try:
+        run(["cp", "/etc/ufw/user.rules", "/etc/ufw/user.rules.pre-lockdown"])
+        run(["cp", "/etc/ufw/user6.rules", "/etc/ufw/user6.rules.pre-lockdown"])
+        run(["ufw", "--force", "reset"])
+        run(["ufw", "default", "deny", "incoming"])
+        run(["ufw", "default", "deny", "outgoing"])
+        run(["ufw", "allow", "in", "22/tcp"])
+        run(["ufw", "allow", "out", "53"])
+        run(["ufw", "allow", "out", "443/tcp"])
+        run(["ufw", "--force", "enable"])
+    except subprocess.CalledProcessError as exc:
+        log(f"lockdown: command failed: {exc}")
+        send_message(chat_id, f"\u26d4 Lockdown failed: {esc(str(exc))}")
+        return
     log("lockdown: activated")
     send_message(
         chat_id,
@@ -684,9 +691,15 @@ def cmd_restore(chat_id: str, arg: str) -> None:
     if not os.path.exists("/etc/ufw/user.rules.pre-lockdown"):
         send_message(chat_id, "⛔ No pre-lockdown backup found. Cannot restore.")
         return
-    subprocess.getoutput("cp /etc/ufw/user.rules.pre-lockdown /etc/ufw/user.rules")
-    subprocess.getoutput("cp /etc/ufw/user6.rules.pre-lockdown /etc/ufw/user6.rules")
-    subprocess.getoutput("ufw --force enable")
+    run = functools.partial(subprocess.run, check=True, capture_output=True, text=True)
+    try:
+        run(["cp", "/etc/ufw/user.rules.pre-lockdown", "/etc/ufw/user.rules"])
+        run(["cp", "/etc/ufw/user6.rules.pre-lockdown", "/etc/ufw/user6.rules"])
+        run(["ufw", "--force", "enable"])
+    except subprocess.CalledProcessError as exc:
+        log(f"restore: command failed: {exc}")
+        send_message(chat_id, f"\u26d4 Restore failed: {esc(str(exc))}")
+        return
     log("lockdown: restored")
     send_message(chat_id, "\u2705 Firewall restored to pre-lockdown state")
 
@@ -696,7 +709,11 @@ def cmd_restart(chat_id: str, arg: str) -> None:
     if not valid:
         return
     if target == "manager":
-        subprocess.getoutput("systemctl restart wazuh-manager")
+        try:
+            subprocess.run(["systemctl", "restart", "wazuh-manager"], check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            send_message(chat_id, f"\u26d4 Restart failed: {esc(str(exc))}")
+            return
         send_message(chat_id, "\u2705 Wazuh manager restarted")
     elif target:
         token = get_wazuh_token()
