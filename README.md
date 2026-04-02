@@ -153,7 +153,7 @@ The deploy script will warn you if these entries are missing.
 
 ## Security notes
 
-- Secrets are loaded from `/etc/homelab-sentinel.env` (mode 600, root-owned)
+- Secrets are loaded from `/etc/homelab-sentinel.env` (mode 640, root:wazuh)
 - All destructive commands require a TOTP code (valid 30s window)
 - Only the configured `TELEGRAM_AUTHORIZED_USER` can issue commands
 - The LND readonly macaroon grants query access only — no payment or channel management capability
