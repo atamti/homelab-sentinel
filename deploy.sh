@@ -5,8 +5,7 @@
 #   ./deploy.sh                    # deploy to localhost (run on the server itself)
 #   ./deploy.sh user@host          # deploy to a remote server via SSH
 #   ./deploy.sh --dry-run [target] # show what would happen without doing it
-#   ./deploy.sh --overwrite-yaml   # overwrite existing YAML config
-#   ./deploy.sh --overwrite-env    # overwrite existing .env file
+#   ./deploy.sh --force            # overwrite config files without prompting
 #
 # Prerequisites on the target:
 #   - Wazuh agent/manager installed at /var/ossec/
@@ -55,16 +54,14 @@ SERVICES_TO_RESTART=("homelab-sentinel")
 # ── Parse arguments ──────────────────────────────────────────────────────────
 
 DRY_RUN=false
-OVERWRITE_YAML=false
-OVERWRITE_ENV=false
+FORCE=false
 TARGET=""
 
 for arg in "$@"; do
     case "$arg" in
-        --dry-run)        DRY_RUN=true ;;
-        --overwrite-yaml) OVERWRITE_YAML=true ;;
-        --overwrite-env)  OVERWRITE_ENV=true ;;
-        *)                TARGET="$arg" ;;
+        --dry-run) DRY_RUN=true ;;
+        --force)   FORCE=true ;;
+        *)         TARGET="$arg" ;;
     esac
 done
 
@@ -78,13 +75,6 @@ NC='\033[0m'
 info()  { echo -e "${GREEN}[+]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
 error() { echo -e "${RED}[✗]${NC} $*" >&2; }
-
-confirm() {
-    local msg="$1"
-    warn "$msg"
-    read -rp "  Continue? [y/N] " answer
-    [[ "$answer" =~ ^[Yy]$ ]]
-}
 
 run_cmd() {
     if [[ "$DRY_RUN" == true ]]; then
@@ -128,6 +118,110 @@ copy_dir() {
         sudo rm -rf "$dest"
         sudo cp -r "$src" "$dest"
     fi
+}
+
+# deploy_config_file — interactive dpkg-style config file handler
+#
+# When the destination file already exists and differs from the source,
+# prompts the user to:
+#   [o] Overwrite — replace with the new version
+#   [k] Keep     — leave the existing file untouched (default)
+#   [d] Diff     — show a unified diff, then re-prompt
+#   [s] Shell    — drop to a shell for manual merging, then re-prompt
+#
+# Usage: deploy_config_file <source> <dest> <owner> <perm> <label>
+deploy_config_file() {
+    local src="$1" dest="$2" owner="$3" perm="$4" label="$5"
+
+    info "Checking for ${dest}"
+    local exists
+    exists=$(run_cmd "test -f ${dest} && echo yes || echo no" 2>/dev/null || echo "no")
+
+    if [[ "$exists" != "yes" ]]; then
+        warn "${dest} not found — seeding from ${label}"
+        copy_file "${src}" "${dest}"
+        run_cmd "sudo chown ${owner} ${dest}"
+        run_cmd "sudo chmod ${perm} ${dest}"
+        return
+    fi
+
+    # File exists — check for differences
+    if [[ "$DRY_RUN" == true ]]; then
+        info "${dest} exists — would prompt for action"
+        return
+    fi
+
+    # Fetch remote file to a temp location for comparison
+    local tmp_live
+    tmp_live=$(mktemp)
+    if [[ -n "$TARGET" ]]; then
+        ssh "$TARGET" "sudo cat ${dest}" > "$tmp_live" 2>/dev/null
+    else
+        sudo cat "${dest}" > "$tmp_live" 2>/dev/null
+    fi
+
+    if diff -q "$src" "$tmp_live" &>/dev/null; then
+        info "${dest} is unchanged"
+        rm -f "$tmp_live"
+        run_cmd "sudo chown ${owner} ${dest}"
+        run_cmd "sudo chmod ${perm} ${dest}"
+        return
+    fi
+
+    # Files differ — prompt (or force)
+    if [[ "$FORCE" == true ]]; then
+        warn "${dest} differs — overwriting (--force)"
+        copy_file "$src" "$dest"
+        run_cmd "sudo chown ${owner} ${dest}"
+        run_cmd "sudo chmod ${perm} ${dest}"
+        rm -f "$tmp_live"
+        return
+    fi
+
+    warn "Config file ${dest} has changed."
+    while true; do
+        echo -e "  ${YELLOW}[o]${NC} Overwrite with new version"
+        echo -e "  ${YELLOW}[k]${NC} Keep existing (default)"
+        echo -e "  ${YELLOW}[d]${NC} Show diff"
+        echo -e "  ${YELLOW}[s]${NC} Drop to shell"
+        read -rp "  Choice [o/k/d/s]: " choice
+        case "${choice:-k}" in
+            o|O)
+                copy_file "$src" "$dest"
+                run_cmd "sudo chown ${owner} ${dest}"
+                run_cmd "sudo chmod ${perm} ${dest}"
+                info "${dest} overwritten"
+                break
+                ;;
+            k|K)
+                info "Keeping existing ${dest}"
+                run_cmd "sudo chown ${owner} ${dest}"
+                run_cmd "sudo chmod ${perm} ${dest}"
+                break
+                ;;
+            d|D)
+                echo ""
+                diff -u --color=always --label "installed: ${dest}" --label "new: ${label}" \
+                    "$tmp_live" "$src" || true
+                echo ""
+                ;;
+            s|S)
+                warn "Dropping to shell. The files are:"
+                warn "  Installed: ${dest}"
+                warn "  New:       ${src}"
+                warn "Type 'exit' when done."
+                if [[ -n "$TARGET" ]]; then
+                    ssh -t "$TARGET" "sudo -i"
+                else
+                    bash
+                fi
+                ;;
+            *)
+                warn "Invalid choice"
+                ;;
+        esac
+    done
+    rm -f "$tmp_live"
 }
 
 # ── Pre-flight checks ───────────────────────────────────────────────────────
@@ -178,59 +272,10 @@ copy_file "${SCRIPT_DIR}/${SERVICE_FILE}" "${SERVICE_DEST}"
 run_cmd "sudo chmod 644 ${SERVICE_DEST}"
 run_cmd "sudo systemctl daemon-reload"
 
-# ── Seed env file if missing ────────────────────────────────────────────────
+# ── Deploy config files (interactive) ────────────────────────────────────────
 
-info "Checking for ${ENV_DEST}"
-env_exists=$(run_cmd "test -f ${ENV_DEST} && echo yes || echo no" 2>/dev/null || echo "no")
-
-if [[ "$env_exists" != "yes" ]]; then
-    warn "${ENV_DEST} not found — seeding from .env.example"
-    warn "You MUST edit this file with real values before starting the service"
-    copy_file "${SCRIPT_DIR}/${ENV_EXAMPLE}" "${ENV_DEST}"
-    run_cmd "sudo chown root:wazuh ${ENV_DEST}"
-    run_cmd "sudo chmod 640 ${ENV_DEST}"
-elif [[ "$OVERWRITE_ENV" == true ]]; then
-    if confirm "${ENV_DEST} exists and will be OVERWRITTEN with ${ENV_EXAMPLE}"; then
-        copy_file "${SCRIPT_DIR}/${ENV_EXAMPLE}" "${ENV_DEST}"
-        run_cmd "sudo chown root:wazuh ${ENV_DEST}"
-        run_cmd "sudo chmod 640 ${ENV_DEST}"
-        warn "${ENV_DEST} overwritten — edit with real values!"
-    else
-        info "Skipped overwriting ${ENV_DEST}"
-    fi
-else
-    info "${ENV_DEST} already exists — not overwriting"
-    # Ensure correct ownership for Wazuh integration scripts
-    run_cmd "sudo chown root:wazuh ${ENV_DEST}"
-    run_cmd "sudo chmod 640 ${ENV_DEST}"
-fi
-
-# ── Seed YAML config if missing ─────────────────────────────────────────────
-
-info "Checking for ${YAML_DEST}"
-yaml_exists=$(run_cmd "test -f ${YAML_DEST} && echo yes || echo no" 2>/dev/null || echo "no")
-
-if [[ "$yaml_exists" != "yes" ]]; then
-    warn "${YAML_DEST} not found — seeding from ${YAML_EXAMPLE}"
-    warn "Edit this file to enable output sanitization"
-    copy_file "${SCRIPT_DIR}/${YAML_EXAMPLE}" "${YAML_DEST}"
-    run_cmd "sudo chown root:wazuh ${YAML_DEST}"
-    run_cmd "sudo chmod 640 ${YAML_DEST}"
-elif [[ "$OVERWRITE_YAML" == true ]]; then
-    if confirm "${YAML_DEST} exists and will be OVERWRITTEN with ${YAML_EXAMPLE}"; then
-        copy_file "${SCRIPT_DIR}/${YAML_EXAMPLE}" "${YAML_DEST}"
-        run_cmd "sudo chown root:wazuh ${YAML_DEST}"
-        run_cmd "sudo chmod 640 ${YAML_DEST}"
-        warn "${YAML_DEST} overwritten — review and adjust settings!"
-    else
-        info "Skipped overwriting ${YAML_DEST}"
-    fi
-else
-    info "${YAML_DEST} already exists — not overwriting"
-    # Ensure correct ownership for Wazuh integration scripts
-    run_cmd "sudo chown root:wazuh ${YAML_DEST}"
-    run_cmd "sudo chmod 640 ${YAML_DEST}"
-fi
+deploy_config_file "${SCRIPT_DIR}/${ENV_EXAMPLE}"  "${ENV_DEST}"  "root:wazuh" "640" "${ENV_EXAMPLE}"
+deploy_config_file "${SCRIPT_DIR}/${YAML_EXAMPLE}" "${YAML_DEST}" "root:wazuh" "640" "${YAML_EXAMPLE}"
 
 # ── Drop latest example files + check for new keys ──────────────────────────
 
@@ -241,7 +286,8 @@ copy_file "${SCRIPT_DIR}/${YAML_EXAMPLE}" "${YAML_DEST}.example"
 run_cmd "sudo chmod 644 ${YAML_DEST}.example"
 
 # Compare env keys (variable names before '=')
-# Note: live env file is mode 600 root-owned, so sudo is needed to read it
+# Note: live env file is mode 640 root-owned, so sudo is needed to read it
+env_exists=$(run_cmd "test -f ${ENV_DEST} && echo yes || echo no" 2>/dev/null || echo "no")
 if [[ "$DRY_RUN" != true && "$env_exists" == "yes" ]]; then
     diff_cmd="comm -23 <(grep -oP '^[A-Z_]+(?==)' ${ENV_DEST}.example | sort) <(sudo grep -oP '^[A-Z_]+(?==)' ${ENV_DEST} | sort)"
     if [[ -n "$TARGET" ]]; then
@@ -259,6 +305,7 @@ if [[ "$DRY_RUN" != true && "$env_exists" == "yes" ]]; then
 fi
 
 # Compare YAML top-level keys
+yaml_exists=$(run_cmd "test -f ${YAML_DEST} && echo yes || echo no" 2>/dev/null || echo "no")
 if [[ "$DRY_RUN" != true && "$yaml_exists" == "yes" ]]; then
     diff_cmd="comm -23 <(grep -oP '^[a-z_]+(?=:)' ${YAML_DEST}.example | sort) <(sudo grep -oP '^[a-z_]+(?=:)' ${YAML_DEST} | sort)"
     if [[ -n "$TARGET" ]]; then
