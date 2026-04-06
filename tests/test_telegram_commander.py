@@ -506,6 +506,178 @@ class TestCmdBlockedIpBoundary:
         assert "No history found" in text
 
 
+class TestCmdDigest:
+    """Tests for the cmd_digest command."""
+
+    FAKE_STATS = {
+        "uptime": "up 1 day",
+        "load": "0.50, 0.40, 0.30",
+        "load_1m": 0.5,
+        "nproc": 4,
+        "mem": "1.5G/4.0G",
+        "mem_pct": 42.0,
+        "disk": "45% used (22G/50G)",
+        "disk_pct": 45.0,
+        "cpu_temp": 55.0,
+        "banned": "3",
+    }
+    FAKE_AGENTS = {
+        "data": {
+            "affected_items": [
+                {"name": "server1", "status": "active", "os": {"name": "Ubuntu 22.04"}},
+                {"name": "server2", "status": "disconnected", "os": {"name": "Debian 12"}},
+            ]
+        }
+    }
+
+    def _run_digest(self, commander, cfg_overrides=None):
+        import sys
+
+        cmds = sys.modules["sentinel.commands"]
+        extra_patches = []
+        if cfg_overrides:
+            from sentinel.config import _DEFAULTS, _deep_merge
+
+            test_cfg = _deep_merge(_DEFAULTS, cfg_overrides)
+            extra_patches.append(patch.object(cmds, "get_cfg", return_value=test_cfg))
+        with (
+            patch.object(cmds, "get_system_stats", return_value=self.FAKE_STATS),
+            patch.object(cmds, "get_wazuh_token", return_value="fake-token"),
+            patch.object(cmds, "wazuh_get", return_value=self.FAKE_AGENTS),
+            patch.object(cmds, "parse_ban_history", return_value={}),
+            patch.object(cmds, "query_critical_alerts", return_value=[]),
+            patch.object(cmds, "get_uptime_kuma_status", return_value=(["svc1", "svc2"], [])),
+        ):
+            for p in extra_patches:
+                p.__enter__()
+            try:
+                commander.cmd_digest("123")
+            finally:
+                for p in extra_patches:
+                    p.__exit__(None, None, None)
+
+    def test_default_sections(self, commander):
+        """All default sections appear in output."""
+        self._run_digest(commander)
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
+        text = sent[-1][1]["json"]["text"]
+        assert "Daily Digest" in text
+        assert "Agents:" in text
+        assert "Security" in text
+        assert "Services" in text
+
+    def test_critical_agent_red_dot(self, commander):
+        """Critical disconnected agent gets red header."""
+        self._run_digest(
+            commander,
+            cfg_overrides={"digest": {"critical_agents": {"server2": "red"}}},
+        )
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
+        text = sent[-1][1]["json"]["text"]
+        # Red circle emoji for critical disconnected
+        assert "\U0001f534" in text
+
+    def test_no_critical_alerts(self, commander):
+        """When no level 10+ alerts, shows 'No Level 10+ alerts'."""
+        self._run_digest(commander)
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
+        text = sent[-1][1]["json"]["text"]
+        assert "No Level 10+" in text
+
+    def test_services_all_up(self, commander):
+        """Services section shows 'All N services up' when none are down."""
+        self._run_digest(commander)
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
+        text = sent[-1][1]["json"]["text"]
+        assert "All 2 services up" in text
+
+    def test_services_with_downtime(self, commander):
+        """Services section shows down services when present."""
+        import sys
+
+        cmds = sys.modules["sentinel.commands"]
+        with (
+            patch.object(cmds, "get_system_stats", return_value=self.FAKE_STATS),
+            patch.object(cmds, "get_wazuh_token", return_value="fake-token"),
+            patch.object(cmds, "wazuh_get", return_value=self.FAKE_AGENTS),
+            patch.object(cmds, "parse_ban_history", return_value={}),
+            patch.object(cmds, "query_critical_alerts", return_value=[]),
+            patch.object(cmds, "get_uptime_kuma_status", return_value=(["svc1"], ["down-svc"])),
+        ):
+            commander.cmd_digest("123")
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
+        text = sent[-1][1]["json"]["text"]
+        assert "Down:" in text
+        assert "down-svc" in text
+
+    def test_disabled_sections(self, commander):
+        """Disabled sections are omitted from output."""
+        self._run_digest(
+            commander,
+            cfg_overrides={
+                "digest": {
+                    "sections": {
+                        "system": False,
+                        "agents": False,
+                        "security": False,
+                        "services": False,
+                        "bitcoin": False,
+                    }
+                }
+            },
+        )
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
+        text = sent[-1][1]["json"]["text"]
+        assert "Daily Digest" in text
+        assert "Agents:" not in text
+        assert "Security" not in text
+        assert "Services" not in text
+
+    def test_custom_title(self, commander):
+        """Title can be overridden (e.g. for /status)."""
+        import sys
+
+        cmds = sys.modules["sentinel.commands"]
+        with (
+            patch.object(cmds, "get_system_stats", return_value=self.FAKE_STATS),
+            patch.object(cmds, "get_wazuh_token", return_value="fake-token"),
+            patch.object(cmds, "wazuh_get", return_value=self.FAKE_AGENTS),
+            patch.object(cmds, "parse_ban_history", return_value={}),
+            patch.object(cmds, "query_critical_alerts", return_value=[]),
+            patch.object(cmds, "get_uptime_kuma_status", return_value=([], [])),
+        ):
+            commander.cmd_digest("123", title="Status Report")
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
+        text = sent[-1][1]["json"]["text"]
+        assert "Status Report" in text
+
+    def test_ban_history_shown(self, commander):
+        """When bans exist, active response section appears."""
+        import sys
+
+        cmds = sys.modules["sentinel.commands"]
+        rule_counts = {"5710": 5, "5712": 2}
+        rules_meta = {
+            "5710": {"level": 10, "description": "sshd brute force"},
+            "5712": {"level": 8, "description": "login attempt"},
+        }
+        with (
+            patch.object(cmds, "get_system_stats", return_value=self.FAKE_STATS),
+            patch.object(cmds, "get_wazuh_token", return_value="fake-token"),
+            patch.object(cmds, "wazuh_get", return_value=self.FAKE_AGENTS),
+            patch.object(cmds, "parse_ban_history", return_value=rule_counts),
+            patch.object(cmds, "lookup_rules", return_value=rules_meta),
+            patch.object(cmds, "query_critical_alerts", return_value=[]),
+            patch.object(cmds, "get_uptime_kuma_status", return_value=([], [])),
+        ):
+            commander.cmd_digest("123")
+        sent = [c for c in commander._mock_post.call_args_list if "sendMessage" in str(c)]
+        text = sent[-1][1]["json"]["text"]
+        assert "Active Response" in text
+        assert "5710" in text
+        assert "×5" in text
+
+
 class TestDigestState:
     """Verify digest state persistence across restarts."""
 
