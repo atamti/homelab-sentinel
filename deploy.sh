@@ -97,8 +97,10 @@ copy_file() {
     fi
 
     if [[ -n "$TARGET" ]]; then
-        scp -q "$src" "${TARGET}:/tmp/_deploy_$(basename "$src")"
-        ssh "$TARGET" "sudo mv /tmp/_deploy_$(basename "$src") $dest"
+        local tmp_remote
+        tmp_remote=$(ssh "$TARGET" mktemp)
+        scp -q "$src" "${TARGET}:${tmp_remote}"
+        ssh "$TARGET" "sudo mv '${tmp_remote}' '$dest'"
     else
         sudo cp "$src" "$dest"
     fi
@@ -112,8 +114,10 @@ copy_dir() {
     fi
 
     if [[ -n "$TARGET" ]]; then
-        scp -q -r "$src" "${TARGET}:/tmp/_deploy_sentinel"
-        ssh "$TARGET" "sudo rm -rf $dest && sudo mv /tmp/_deploy_sentinel $dest"
+        local tmp_remote
+        tmp_remote=$(ssh "$TARGET" mktemp -d)
+        scp -q -r "$src" "${TARGET}:${tmp_remote}/payload"
+        ssh "$TARGET" "sudo rm -rf '$dest' && sudo mv '${tmp_remote}/payload' '$dest' && rmdir '${tmp_remote}'"
     else
         sudo rm -rf "$dest"
         sudo cp -r "$src" "$dest"
